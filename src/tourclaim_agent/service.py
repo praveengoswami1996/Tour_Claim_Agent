@@ -18,6 +18,7 @@ from tourclaim_agent.agent.core import AgentContext, ocr_reference
 from tourclaim_agent.auth.identity import Employee, IdentityResolver
 from tourclaim_agent.auth.tokens import InvalidToken, TokenClaims, TokenValidator
 from tourclaim_agent.clients.allowlist import Service, write_enabled
+from tourclaim_agent.clients.errors import BackendError
 from tourclaim_agent.clients.http import UserScopedClient
 from tourclaim_agent.clients.ocr_api import OcrApiClient
 from tourclaim_agent.clients.org_api import OrgApiClient
@@ -169,11 +170,28 @@ class AgentService:
             },
             "pending": {"action_needed_count": action_needed},
             # BIL-64: "Processing 2 bills..." / "Your bills are read. Open me to see where they went."
-            "bills": await self._uploads.counts(user.employee.emp_code, self._settings.bill_report_keep_days),
+            "bills": await self._bill_counts(user),
             "workflows": [
                 {"workflow_id": w.workflow_id, "title": w.title, "updated_at": w.updated_at} for w in workflows
             ],
         }
+
+    async def _bill_counts(self, user: RequestUser) -> dict[str, int]:
+        """BIL-64. Bills that finished reading while the chat was closed count as "read, not yet told"."""
+        emp_code = user.employee.emp_code
+        counts = await self._uploads.counts(emp_code, self._settings.bill_report_keep_days)
+        if counts["pending"]:
+            pending = {r.document_id for r in await self._uploads.with_status(emp_code, UploadStatus.PENDING)}
+            try:
+                documents = await OcrApiClient(self._client(Service.TOUR, user.token)).list_documents(
+                    "agent:", include_response=False
+                )
+            except BackendError as exc:
+                log.warning("bill counts from the OCR queue unavailable (%s)", exc.status_code)
+                return counts
+            finished = sum(1 for d in documents if d.document_id in pending and d.status in ("Completed", "Failed"))
+            counts = {"pending": counts["pending"] - finished, "unreported": counts["unreported"] + finished}
+        return counts
 
     async def create_workflow(self, user: RequestUser) -> WorkflowRecord:
         return await self._registry.create(user.employee.emp_code, NEW_TITLE)

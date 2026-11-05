@@ -530,6 +530,7 @@ class BillPipeline:
             if cleared:
                 row = next(r for r in ws.transport if r.key == outcome.row_key)
                 row.air_cleared = True
+                row.mode = None  # also when the bill filled a planned leg: the plan's mode is not what was used
                 item.detail = AIR_NOT_IN_PLAN
             changed.append(item)
         for item in [i for i in items if i.stay is not None]:
