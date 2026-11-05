@@ -73,11 +73,13 @@ class TestStart:
         assert "couldn't find tour 777" in texts(events)
         assert not any("777" in c for c in backend.calls)
 
-    def test_existing_draft_is_not_overwritten(self, client, backend):
+    def test_existing_draft_is_continued(self, client, backend):
         backend.drafts[503] = {"draftId": 42, "empTourPlanId": 503}
         events = say(client, start(client), "start a claim for my Mumbai tour")
-        assert "already have a saved draft" in texts(events)
-        assert event(events, "draft_saved")["draft_id"] == 42
+        assert "already have a saved draft for Tour 503" in texts(events)
+        assert "Nothing already in the draft will be changed" in texts(events)
+        assert event(events, "claim_summary")["draft_id"] == 42
+        assert event(events, "upload_request")
 
 
 class TestBills:

@@ -192,19 +192,34 @@ async def start_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dict
         )
 
     tour = candidates[0]  # From the employee's own claimable list: ownership established.
+    parked = dict(state.get("parked") or {})
+    if str(tour.tour_id) in parked:
+        # Bills for this tour were already matched in this conversation while saving was off.
+        ws = ClaimWorkspace.model_validate(parked.pop(str(tour.tour_id)))
+        return reply(
+            TextEvent(text=f"Here is what I have for Tour {tour.tour_id} ({_route(ws)}) from your bills so far."),
+            summary_event(ws, analyse(ws), save_enabled=ctx.save_draft_enabled),
+            _upload_request(ctx),
+            claim=_dump(ws),
+            parked=parked,
+            focus_tour_id=tour.tour_id,
+        )
     try:
         existing = await ctx.tours.get_outside_draft(ctx.employee.emp_id, tour.tour_id)
         if existing is not None:
+            # BIL-70: continue the saved draft. New bills are added after its rows; nothing in it changes.
+            ws = workspace_from_draft(tour.tour_id, existing, tour)
+            journeys, stays = len(ws.transport), len(ws.stays)
             return reply(
                 TextEvent(
-                    text=f"You already have a saved draft for Tour {tour.tour_id}. Please continue it in the claim "
-                    "form so nothing you entered there is overwritten."
+                    text=f"You already have a saved draft for Tour {tour.tour_id} ({_route(ws)}) with "
+                    f"{journeys} journey{'s' if journeys != 1 else ''} and {stays} stay{'s' if stays != 1 else ''}. "
+                    "Upload more tickets and hotel bills and I'll add them to it. Nothing already in the draft "
+                    "will be changed."
                 ),
-                DraftSavedEvent(
-                    tour_id=tour.tour_id,
-                    draft_id=existing.draft_id,
-                    open_in_form=f"{CLAIM_FORM_PATH}?tourId={tour.tour_id}&isDraft=true&statusId=2",
-                ),
+                summary_event(ws, analyse(ws), save_enabled=ctx.save_draft_enabled),
+                _upload_request(ctx),
+                claim=_dump(ws),
                 focus_tour_id=tour.tour_id,
             )
         prefill: ClaimPrefill = await ctx.tours.get_claim_prefill(tour.tour_id)

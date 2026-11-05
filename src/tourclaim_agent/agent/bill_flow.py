@@ -344,3 +344,40 @@ async def assign_bills(state: AgentState, runtime: Runtime[AgentContext]) -> dic
     if not events:
         events = [TextEvent(text="Those bills have already been dealt with.").model_dump(mode="json")]
     return {**update, "events": events, "messages": _transcript(events)}
+
+
+async def bill_status_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
+    """ "Are my bills read?" (BIL-72). New results were already reported at the start of this turn."""
+    ctx = runtime.context
+    emp_code = ctx.employee.emp_code
+    pending = await ctx.uploads.with_status(emp_code, UploadStatus.PENDING)
+    waiting = await ctx.uploads.with_status(emp_code, UploadStatus.AWAITING_TOUR)
+    retrying = await ctx.uploads.with_status(emp_code, UploadStatus.COMPLETED_UNPROCESSED)
+    parts = []
+    if pending:
+        parts.append(
+            f"I'm still reading {_plural(len(pending), 'bill')}: {_names([r.file_name for r in pending])}. "
+            "This usually takes a minute or two."
+        )
+    if retrying:
+        parts.append(f"{_plural(len(retrying), 'bill')} couldn't be saved yet; I'll try again shortly.")
+    if waiting:
+        parts.append(f"For {_plural(len(waiting), 'bill')} I need you to tell me the tour.")
+    if not parts:
+        parts.append(
+            "All the bills you uploaded have been read and dealt with. Upload more at any time."
+            if state.get("bill_events")
+            else "No bills are being read right now. Upload your tickets and hotel bills at any time."
+        )
+    events: list[dict[str, Any]] = [TextEvent(text=" ".join(parts)).model_dump(mode="json")]
+    update: dict[str, Any] = {}
+    if waiting:
+        try:
+            choice_events, choice = await _ask_again(ctx, state)
+        except BackendError:
+            choice_events, choice = [], None
+        events += choice_events
+        if choice is not None:
+            update["pending_choice"] = choice
+    events.append(await bill_status(ctx.uploads, emp_code))
+    return {**update, "events": events, "messages": _transcript(events)}

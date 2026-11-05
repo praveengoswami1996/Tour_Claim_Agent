@@ -26,7 +26,8 @@ _GOAL_HINTS = """Goal meanings (the message may be in English, Hindi or Hinglish
 - tour_status: where a tour or claim is, its progress or status ("kahan tak pahuncha", "kya hua")
 - policy_question: a rule or entitlement question, not about one specific tour's progress
 - list_tours / claimable_tours / pending_actions: list tours / tours ready to claim / what needs my action
-- raise_claim, claim_review, save_draft, cancel_claim: start, check, save or cancel the claim being prepared"""
+- raise_claim, claim_review, save_draft, cancel_claim: start, check, save or cancel the claim being prepared
+- bill_status: whether uploaded bills/tickets have been read and where they went ("bills ka kya hua")"""
 
 _NULLABLE_INT = {"type": ["integer", "null"]}
 _SCHEMA = {

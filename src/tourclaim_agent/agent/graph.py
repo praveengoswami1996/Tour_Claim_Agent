@@ -112,6 +112,7 @@ def route(state: AgentState) -> str:
         Goal.SAVE_DRAFT: "save_draft",
         Goal.CANCEL_CLAIM: "cancel_claim",
         Goal.ASSIGN_BILLS: "assign_bills",
+        Goal.BILL_STATUS: "bill_status",
         Goal.ANSWER_CLARIFICATION: "not_yet_available",
         Goal.EDIT_CLAIM: "not_yet_available",
         Goal.SUPPLEMENTARY_CLAIM: "not_yet_available",
@@ -276,16 +277,22 @@ async def out_of_scope(state: AgentState, runtime: Runtime[AgentContext]) -> dic
 
 
 async def help_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
-    name = runtime.context.employee.name
+    ctx = runtime.context
+    name = ctx.employee.name
     greeting = f"Hello{', ' + name if name else ''}. " if _intent(state).goal is Goal.GREETING else ""
+    bills = (
+        "Upload your tickets and hotel bills and I'll find the tour and save them into its draft."
+        if ctx.auto_save
+        else "Upload your tickets and hotel bills and I'll find the tour they belong to."
+    )
     return _reply(
         TextEvent(
-            text=greeting + "I can help you with your tours and claims. Try:\n"
+            text=greeting + bills + " Or ask about your tours, for example:\n"
             '• "Show my tours"\n'
             '• "What is pending for me?"\n'
             '• "Which tours can I claim?"\n'
             '• "Where is my Mumbai claim?" or "Status of tour 1234"\n'
-            '• "Start a claim for my Mumbai tour", then upload your tickets and hotel bills'
+            '• "Are my bills read?"'
         )
     )
 
@@ -302,6 +309,7 @@ _NODES = {
     "save_draft": claim_flow.save_draft,
     "cancel_claim": claim_flow.cancel_claim,
     "assign_bills": bill_flow.assign_bills,
+    "bill_status": bill_flow.bill_status_node,
     "not_yet_available": not_yet_available,
     "policy_question": policy_question,
     "out_of_scope": out_of_scope,

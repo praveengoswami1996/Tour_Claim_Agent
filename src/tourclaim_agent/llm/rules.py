@@ -44,6 +44,13 @@ _GOAL_RULES: list[tuple[Goal, re.Pattern[str]]] = [
         re.compile(r"\b(cancel|discard|abandon|drop)\b.*\b(claim|draft|this|it)\b|^\s*(cancel|stop)\s*$"),
     ),
     (
+        Goal.BILL_STATUS,
+        re.compile(
+            r"\b(bills?|tickets?|receipts?)\b.*\b(read|status|happened|processed)\b|"
+            r"\b(what happened to|status of|did you (read|get)) (my|the) (bills?|tickets?|receipts?)\b"
+        ),
+    ),
+    (
         Goal.CLAIM_REVIEW,
         re.compile(
             r"\b(review|summary|summari[sz]e|check (my|the|this) (claim|bills?)|done|uploaded|finished|"
