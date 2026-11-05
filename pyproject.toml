@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tourclaim-agent"
-version = "0.2.0"
+version = "0.3.0"
 description = "Tour Claim AI Agent: a goal-oriented assistant that helps DFCCIL employees prepare and track tour claims through the .NET Tour API."
 readme = "README.md"
 requires-python = ">=3.11"

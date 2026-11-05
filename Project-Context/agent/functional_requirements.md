@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Functional Requirements Specification (FRS) |
-| Version | 0.1 (draft for review) |
+| Version | 0.2 (draft for review). Extended by `bill_upload_auto_draft_requirements.md` (release 0.3) |
 | Date | 2026-11-05 |
 | Status | Draft. The decisions in §12 must be closed before design sign-off. |
 | Inputs | Phase 1.1 frontend analysis (chat session), Phase 1.2 backend analysis (`Project-Context/backend/*.md`) |
@@ -151,7 +151,7 @@ The analysis is **advisory**. It helps the employee prepare a correct claim befo
 | DOC-01 | Accept bill, ticket, boarding-pass and hotel-invoice uploads (pdf/jpg/jpeg/png) in the conversation. Check type and size before upload, matching the app's limits. | M |
 | DOC-02 | Send files to the **existing OCR pipeline** with the user's token, using an agent-specific reference tag (e.g. `agent:tour-<id>`) so the existing app's OCR routing is not affected. | M — `POST Ocr/Upload`, `GetMyDocuments`, `GetDocument`, `GetFile` |
 | DOC-03 | Track OCR jobs (Pending / Processing / Completed / Failed), tell the employee when results are ready, and offer a retry on failure. | M — `Ocr/Retry/{id}`, `Cancel` |
-| DOC-04 | Map OCR results to proposed claim rows (transport or accommodation) with per-field confidence. Show the employee what was read, and require confirmation of low-confidence or changed fields before using them. | M |
+| DOC-04 | Map OCR results to proposed claim rows (transport or accommodation) with per-field confidence. Show the employee what was read, and require confirmation of low-confidence or changed fields before using them. **Amended by `bill_upload_auto_draft_requirements.md` §1.3 (needs sign-off):** read bills are saved into the tour's **draft** without asking, as the in-app Claim Assistant does, because a draft is not a submission and the employee reviews every row in the claim form before submitting. This stays behind `TCA_ENABLED_WRITE_ENDPOINTS` and `TCA_AUTO_SAVE_BILLS`; with either off, the earlier "review, then say save" behaviour applies. | M |
 | DOC-05 | Claim each OCR result exactly once (`MarkAsRead`), and `Release` results the employee discards, so the existing app and the agent don't apply the same result twice. | M |
 | DOC-06 | Detect **missing documents**: a billed row without an attached bill, a stay without a hotel bill (unless own arrangement or free accommodation), a journey with a ticketed mode but no ticket, and a missing nomination or approved-tour document where the form requires one. This is advisory until a document policy exists. **[DEP-4]** | M |
 | DOC-07 | Detect **duplicate bills**: the same file hash, or the same invoice number and amount, within the claim and across the employee's other claims as far as the retrievable data allows. | S |
@@ -337,7 +337,9 @@ Status 18 is not defined in the backend. The agent shall not use it (see Q4 in t
 |---|---|
 | `POST /v1/sessions` | Start or resume a session for the token's employee; returns open workflows and pending items |
 | `POST /v1/workflows/{id}/messages` | Send a message (text plus attachment references); SSE stream of reply events |
-| `POST /v1/workflows/{id}/attachments` | Upload a file (forwarded to OCR) |
+| `POST /v1/workflows/{id}/attachments` | Upload bills at any time (forwarded to OCR); no claim in progress needed (BIL-01) |
+| `POST /v1/workflows/{id}/bills/check` | Process finished bills: match each to a tour and save it into that tour's draft (BIL-10) |
+| `POST /v1/workflows/{id}/bills/{documentId}/retry` / `.../cancel` | Read an unreadable bill again (BIL-15); remove a slow one (BIL-16) |
 | `POST /v1/workflows/{id}/confirmations/{cid}` | Approve or reject a pending confirmation (payload hash required) |
 | `GET /v1/workflows` / `DELETE /v1/workflows/{id}` | List or abandon workflows |
 | `GET /v1/health` | Health check, including reachability of the backend and the LLM |
@@ -431,3 +433,18 @@ These follow from principle P1 and the Phase 1.2 findings. They are owned by the
 | G9 Confirmation | CNF-01..06 | Yes (agent-side) |
 | G10 Execute | EXE-01..15 | Yes for drafts, submit and clarification; recipient lookup needs DEP-6 |
 | G11 Persist and resume | STA-01..08 | Yes (agent-side) |
+
+### 13.1 Bills at any time and automatic drafts (`bill_upload_auto_draft_requirements.md`, release 0.3)
+
+| Requirements | Goal | Where | Tests |
+|---|---|---|---|
+| BIL-01..07 Uploading | G4 | `service.add_attachments`, `state/uploads.py`, `agent/bill_flow.register_bills` | `test_uploads.py` |
+| BIL-10..18 Reading and claiming results | G4 | `drafting/bill_pipeline.py` (`check`), `POST bills/check`, `retry`/`cancel` | `test_bill_check.py`, scenarios 7, 8, 10, 14 |
+| BIL-20..24 Results to rows, stay and air rules | G3, G4 | `bill_pipeline.stay_problem`, `is_air`, `drafting/ocr_mapping.py` | scenarios 12, 13 |
+| BIL-30..37 Which tour | G3 | `drafting/tour_match.py`, `bill_pipeline._place` | `test_tour_match.py`, scenarios 1, 2, 5, 6 |
+| BIL-40..53 Saving into the tour's draft | G10 | `bill_pipeline._save_into`/`write_draft`, `drafting/saved_draft.py`, `drafting/payload.py`, `drafting/merge.py` | `test_saved_draft.py`, scenarios 3, 4, 7, 9 |
+| BIL-60..65 Telling the employee | G8 | `agent/bill_flow.report`, `bill_report` event, `POST /v1/sessions` `bills` | `test_bill_check.py`, scenario 10 |
+| BIL-70..74 Conversation | G1 | `claim_flow.start_claim`, `bill_flow.bill_status_node`/`assign_bills`, `llm/rules.py` | `test_conversation_bills.py`, scenario 5 |
+| NFR-1..4 | | per-employee lock in `service.py`; allow-list unchanged | scenario 14 |
+
+DOC-04 is amended by §1.3 of that document (see §5.5).
