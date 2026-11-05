@@ -81,9 +81,11 @@ class TestStart:
 
 
 class TestBills:
-    def test_upload_needs_an_active_claim(self, client):
-        response = upload(client, start(client), ("out.pdf", PDF))
-        assert response.status_code == 409 and response.json()["error"] == "no_active_claim"
+    def test_upload_tagged_with_the_claim_in_progress(self, client, backend):
+        workflow_id = start(client)
+        say(client, workflow_id, "start a claim for my Mumbai tour")
+        assert upload(client, workflow_id, ("out.pdf", PDF)).status_code == 200
+        assert [d["reference"] for d in backend.ocr_docs.values()] == [f"agent:{workflow_id}:tour-503"]
 
     @pytest.mark.parametrize(
         ("name", "content", "reason"),

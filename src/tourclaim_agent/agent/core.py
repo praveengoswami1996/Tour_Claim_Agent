@@ -14,6 +14,7 @@ from tourclaim_agent.clients.errors import BackendError, BackendForbidden, Backe
 from tourclaim_agent.clients.ocr_api import OcrApiClient
 from tourclaim_agent.clients.tour_api import TourApiClient
 from tourclaim_agent.llm.intent import Intent, IntentExtractor
+from tourclaim_agent.state.uploads import UploadStore
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class AgentState(TypedDict, total=False):
     events: list[dict[str, Any]]
     # The claim being prepared (ClaimWorkspace as JSON), if any.
     claim: dict[str, Any] | None
-    # Bills uploaded since the last turn, registered by the graph (input only).
+    # Bills uploaded in this request, already recorded in the upload store (input only).
     new_bills: list[dict[str, Any]]
 
 
@@ -42,14 +43,27 @@ class AgentContext:
     intents: IntentExtractor
     today: date
     workflow_id: str
+    uploads: UploadStore
     save_draft_enabled: bool = False
+    # Save read bills into drafts without being asked (BIL-49). Only meaningful when saving is enabled.
+    auto_save_bills: bool = True
     max_upload_files: int = 20
     max_upload_mb: int = 20
+    bill_report_keep_days: int = 14
+    bill_slow_minutes: int = 15
+
+    @property
+    def auto_save(self) -> bool:
+        return self.save_draft_enabled and self.auto_save_bills
 
 
-def ocr_reference(workflow_id: str, tour_id: int) -> str:
+# Every agent tag starts with "agent:" so the web app's own screens never pick these files up (BIL-03).
+AGENT_REFERENCE_PREFIX = "agent:"
+
+
+def ocr_reference(workflow_id: str, tour_id: int | None = None) -> str:
     """OCR reference tag for agent uploads; distinct from the web app's own tags."""
-    return f"agent:{workflow_id}:tour-{tour_id}"
+    return f"agent:{workflow_id}:" + (f"tour-{tour_id}" if tour_id is not None else "unassigned")
 
 
 def reply(*events: Any, **state: Any) -> dict[str, Any]:

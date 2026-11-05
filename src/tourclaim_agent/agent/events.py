@@ -109,6 +109,20 @@ class UploadRequestEvent(BaseModel):
     max_file_mb: int
 
 
+class BillFileStatus(BaseModel):
+    document_id: int
+    file_name: str
+    status: str  # Pending | Processing (as the OCR queue reports it)
+
+
+class BillStatusEvent(BaseModel):
+    """Bills still being read (§6.1). The UI polls bills/check while `pending` > 0."""
+
+    type: Literal["bill_status"] = "bill_status"
+    pending: int
+    files: list[BillFileStatus] = Field(default_factory=list)
+
+
 class JourneyLine(BaseModel):
     key: str
     origin: str
@@ -181,6 +195,7 @@ AgentEvent = Annotated[
     | TourStatusEvent
     | ChoicesEvent
     | UploadRequestEvent
+    | BillStatusEvent
     | ClaimSummaryEvent
     | DraftSavedEvent,
     Field(discriminator="type"),

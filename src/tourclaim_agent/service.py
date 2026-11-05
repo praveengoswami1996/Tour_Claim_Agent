@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from pathlib import PurePath
@@ -11,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from tourclaim_agent.agent import bill_flow
 from tourclaim_agent.agent.core import AgentContext, ocr_reference
 from tourclaim_agent.auth.identity import Employee, IdentityResolver
 from tourclaim_agent.auth.tokens import InvalidToken, TokenClaims, TokenValidator
@@ -23,6 +26,7 @@ from tourclaim_agent.config import Settings
 from tourclaim_agent.llm.intent import IntentExtractor
 from tourclaim_agent.state.records import WorkflowRecord
 from tourclaim_agent.state.registry import WorkflowRegistry
+from tourclaim_agent.state.uploads import UploadRecord, UploadStore
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +55,6 @@ class AttachmentRejected(Exception):
     """An uploaded file failed validation. The message is safe to show to the employee."""
 
 
-class NoActiveClaim(Exception):
-    """Files were uploaded to a workflow that is not preparing a claim."""
-
-
 @dataclass(frozen=True)
 class RequestUser:
     """The authenticated caller. The token lives only for the duration of the request."""
@@ -80,6 +80,7 @@ class AgentService:
         identities: IdentityResolver,
         intents: IntentExtractor,
         registry: WorkflowRegistry,
+        uploads: UploadStore,
         graph: Any,
     ) -> None:
         self._settings = settings
@@ -88,8 +89,14 @@ class AgentService:
         self._identities = identities
         self._intents = intents
         self._registry = registry
+        self._uploads = uploads
         self._graph = graph
         self._enabled_writes = frozenset(settings.enabled_write_endpoints)
+        # Bill processing for one employee runs one request at a time (NFR-2). One instance only.
+        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    def _lock(self, emp_code: str) -> asyncio.Lock:
+        return self._locks[emp_code]
 
     @property
     def max_upload_files(self) -> int:
@@ -130,10 +137,14 @@ class AgentService:
             intents=self._intents,
             today=date.today(),
             workflow_id=workflow_id,
+            uploads=self._uploads,
             save_draft_enabled=write_enabled("Claim/SaveRaiseClaimDraft", self._enabled_writes)
             and not user.employee.read_only,
+            auto_save_bills=self._settings.auto_save_bills,
             max_upload_files=self._settings.max_upload_files,
             max_upload_mb=self._settings.max_upload_bytes // (1024 * 1024),
+            bill_report_keep_days=self._settings.bill_report_keep_days,
+            bill_slow_minutes=self._settings.bill_slow_minutes,
         )
 
     @staticmethod
@@ -207,56 +218,71 @@ class AgentService:
     async def add_attachments(
         self, user: RequestUser, workflow_id: str, files: list[UploadedFile]
     ) -> list[dict[str, Any]]:
+        """Accept bills at any time (BIL-01); a claim in progress only changes the reference tag (BIL-03)."""
         await self._owned(user, workflow_id)
         if user.employee.read_only:
             raise ReadOnlySession()
         self._validate(files)
-        snapshot = await self._graph.aget_state(self._config(workflow_id))
-        claim = (snapshot.values or {}).get("claim")
-        if not claim:
-            raise NoActiveClaim()
+        emp_code = user.employee.emp_code
+        async with self._lock(emp_code):
+            snapshot = await self._graph.aget_state(self._config(workflow_id))
+            claim = (snapshot.values or {}).get("claim")
+            tour_id = int(claim["tour_id"]) if claim else None
 
-        known = {b["sha256"] for b in claim.get("bills", [])}
-        fresh: list[tuple[UploadedFile, str]] = []
-        duplicates: list[str] = []
-        for f in files:
-            digest = hashlib.sha256(f.content).hexdigest()
-            if digest in known or digest in {d for _, d in fresh}:
-                duplicates.append(f.file_name)
-            else:
-                fresh.append((f, digest))
+            fresh: list[tuple[UploadedFile, str]] = []
+            duplicates: list[str] = []
+            for f in files:
+                digest = hashlib.sha256(f.content).hexdigest()
+                if digest in {d for _, d in fresh} or await self._uploads.already_uploaded(emp_code, digest):
+                    duplicates.append(f.file_name)
+                else:
+                    fresh.append((f, digest))
 
-        events: list[dict[str, Any]] = []
-        if duplicates:
-            events.append(
-                {
-                    "type": "notice",
-                    "level": "warning",
-                    "text": f"Skipped files already uploaded for this claim: {', '.join(duplicates)}.",
-                }
+            events: list[dict[str, Any]] = []
+            if duplicates:
+                events.append(
+                    {
+                        "type": "notice",
+                        "level": "warning",
+                        "text": "Skipped, already uploaded: " + ", ".join(duplicates) + ".",
+                    }
+                )
+            if not fresh:
+                return events + [await bill_flow.bill_status(self._uploads, emp_code)]
+
+            reference = ocr_reference(workflow_id, tour_id)
+            ocr = OcrApiClient(self._client(Service.TOUR, user.token))
+            documents = await ocr.upload(
+                [(f.file_name, f.content, _CONTENT_TYPES[PurePath(f.file_name).suffix.lower()]) for f, _ in fresh],
+                reference=reference,
             )
-        if not fresh:
-            return events
-
-        ocr = OcrApiClient(self._client(Service.TOUR, user.token))
-        documents = await ocr.upload(
-            [(f.file_name, f.content, _CONTENT_TYPES[PurePath(f.file_name).suffix.lower()]) for f, _ in fresh],
-            reference=ocr_reference(workflow_id, int(claim["tour_id"])),
-        )
-        by_index = {d.index if d.index is not None else i: d for i, d in enumerate(documents)}
-        new_bills = [
-            {"document_id": by_index[i].document_id, "file_name": f.file_name, "sha256": digest, "status": "Pending"}
-            for i, (f, digest) in enumerate(fresh)
-            if i in by_index
-        ]
-        result = await self._graph.ainvoke(
-            {
-                "messages": [{"role": "user", "text": f"[uploaded {len(new_bills)} file(s)]"}],
-                "events": [],
-                "new_bills": new_bills,
-            },
-            self._config(workflow_id),
-            context=self._context(user, workflow_id),
-        )
+            by_index = {d.index if d.index is not None else i: d for i, d in enumerate(documents)}
+            new_bills = []
+            for i, (f, digest) in enumerate(fresh):
+                if i not in by_index:
+                    continue
+                document_id = by_index[i].document_id
+                await self._uploads.add(
+                    UploadRecord(
+                        document_id=document_id,
+                        emp_code=emp_code,
+                        workflow_id=workflow_id,
+                        file_name=f.file_name,
+                        file_size=len(f.content),
+                        sha256=digest,
+                        reference=reference,
+                    )
+                )
+                new_bills.append({"document_id": document_id, "file_name": f.file_name, "sha256": digest})
+            log.info("uploaded %d bill(s) in workflow %s", len(new_bills), workflow_id)
+            result = await self._graph.ainvoke(
+                {
+                    "messages": [{"role": "user", "text": f"[uploaded {len(new_bills)} file(s)]"}],
+                    "events": [],
+                    "new_bills": new_bills,
+                },
+                self._config(workflow_id),
+                context=self._context(user, workflow_id),
+            )
         await self._registry.touch(workflow_id)
         return events + list(result.get("events", []))

@@ -32,11 +32,11 @@ from tourclaim_agent.logging_setup import configure_logging, correlation_id, new
 from tourclaim_agent.service import (
     AgentService,
     AttachmentRejected,
-    NoActiveClaim,
     ReadOnlySession,
     WorkflowNotFound,
 )
 from tourclaim_agent.state.registry import WorkflowRegistry
+from tourclaim_agent.state.uploads import UploadStore
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,8 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
             stack.push_async_callback(registry_conn.close)
             registry = WorkflowRegistry(registry_conn)
             await registry.setup()
+            uploads = UploadStore(registry_conn)
+            await uploads.setup()
             # Separate connection: the checkpointer manages its own transactions.
             checkpoint_conn = await aiosqlite.connect(db_path)
             stack.push_async_callback(checkpoint_conn.close)
@@ -73,6 +75,7 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
                 identities=IdentityResolver(settings.identity_cache_seconds),
                 intents=build_intent_extractor(settings, http),
                 registry=registry,
+                uploads=uploads,
                 graph=build_graph(checkpointer),
             )
             log.info("Tour Claim AI Agent %s started (%s)", __version__, settings.environment.value)
@@ -121,10 +124,6 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
     @app.exception_handler(AttachmentRejected)
     async def _attachment(_: Request, exc: AttachmentRejected) -> JSONResponse:
         return _error(400, "attachment_rejected", str(exc))
-
-    @app.exception_handler(NoActiveClaim)
-    async def _no_claim(_: Request, exc: NoActiveClaim) -> JSONResponse:
-        return _error(409, "no_active_claim", 'Start a claim first, for example "start a claim for my Mumbai tour".')
 
     @app.exception_handler(WorkflowNotFound)
     async def _workflow_missing(_: Request, exc: WorkflowNotFound) -> JSONResponse:

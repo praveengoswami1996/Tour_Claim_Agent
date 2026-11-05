@@ -22,7 +22,6 @@ from tourclaim_agent.agent.core import (
     AgentState,
     backend_problem,
     intent_of,
-    ocr_reference,
     reply,
 )
 from tourclaim_agent.agent.events import (
@@ -42,7 +41,7 @@ from tourclaim_agent.agent.events import (
 )
 from tourclaim_agent.agent.resolver import has_reference, resolve_tours, tour_label
 from tourclaim_agent.clients.errors import BackendError
-from tourclaim_agent.domain.claim import Bill, ClaimPrefill, ClaimWorkspace
+from tourclaim_agent.domain.claim import ClaimPrefill, ClaimWorkspace
 from tourclaim_agent.drafting.analysis import Finding, Severity, analyse, blocking
 from tourclaim_agent.drafting.merge import merge_bill, same_place
 from tourclaim_agent.drafting.ocr_mapping import extract_bill
@@ -242,30 +241,11 @@ async def start_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dict
 # ----------------------------------------------------------------------------- bills
 
 
-async def register_bills(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
-    ws = _workspace(state)
-    new = state.get("new_bills") or []
-    if ws is None:  # The API layer prevents this; kept as a safeguard.
-        return reply(NoticeEvent(level="warning", text="Start a claim before uploading bills."), new_bills=[])
-    for item in new:
-        if ws.bill(item["document_id"]) is None:
-            ws.bills.append(Bill(**item))
-    names = ", ".join(item["file_name"] for item in new)
-    return reply(
-        TextEvent(
-            text=f"Got {len(new)} file{'s' if len(new) != 1 else ''}: {names}. I'm reading them now; this usually "
-            'takes a minute or two. Say "review my claim" to see what I found.'
-        ),
-        claim=_dump(ws),
-        new_bills=[],
-    )
-
-
 async def refresh_bills(ctx: AgentContext, ws: ClaimWorkspace) -> None:
     """Pull finished OCR results for this claim's bills and merge them into the rows."""
     if not ws.pending_bills:
         return
-    documents = await ctx.ocr.list_documents(ocr_reference(ctx.workflow_id, ws.tour_id), include_response=True)
+    documents = await ctx.ocr.list_documents(f"agent:{ctx.workflow_id}:", include_response=True)
     by_id = {d.document_id: d for d in documents}
     finished: list[int] = []
     for bill in ws.pending_bills:

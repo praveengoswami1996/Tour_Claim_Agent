@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # Bill uploads (match the OCR service limits)
     max_upload_files: int = 20
     max_upload_bytes: int = 20 * 1024 * 1024
+    # Read bills are saved into the tour's draft automatically when draft saving is enabled (BIL-49).
+    auto_save_bills: bool = True
+    # Bill outcomes never told to the employee are dropped after this many days (BIL-63).
+    bill_report_keep_days: int = 14
+    # A bill still being read after this many minutes is reported once as slow (BIL-16).
+    bill_slow_minutes: int = 15
 
     # Authentication
     auth_mode: AuthMode = AuthMode.JWKS

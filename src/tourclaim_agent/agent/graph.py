@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Checkpointer
 
-from tourclaim_agent.agent import claim_flow
+from tourclaim_agent.agent import bill_flow, claim_flow
 from tourclaim_agent.agent.core import AgentContext, AgentState, intent_of
 from tourclaim_agent.agent.core import backend_problem as _backend_problem
 from tourclaim_agent.agent.core import reply as _reply
@@ -288,7 +288,7 @@ _NODES = {
 def build_graph(checkpointer: Checkpointer | None = None):
     graph = StateGraph(AgentState, context_schema=AgentContext)
     graph.add_node("understand", understand)
-    graph.add_node("register_bills", claim_flow.register_bills)
+    graph.add_node("register_bills", bill_flow.register_bills)
     for name, node in _NODES.items():
         graph.add_node(name, node)
 
