@@ -1,5 +1,8 @@
 # Tour Claim AI Agent 0.3: frontend changes (Tour_React)
 
+> **Superseded** by `agent_0.4_frontend_requirements.md`: the agent is being rebuilt to behave exactly like the old
+> Claim Assistant. Do not implement this document.
+
 **Status:** ready to implement. The agent side is done (branch `feature/bill-auto-draft` in `TourClaim_AI_Agent`).
 **Source requirements:** `TourClaim_AI_Agent/Project-Context/agent/bill_upload_auto_draft_requirements.md`
 (§6 API, §7 React changes). This document turns those into concrete changes in `D:\CETPA\Tour_React`.
