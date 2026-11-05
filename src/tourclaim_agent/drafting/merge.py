@@ -47,9 +47,24 @@ def row_key(row: TransportRow | StayRow) -> tuple:
     return stay_key(row.location, row.check_in_date, row.check_out_date)
 
 
+def is_placeholder(row: TransportRow | StayRow) -> bool:
+    """A saved journey with nothing from a bill: a planned leg the draft was seeded with.
+
+    A matching bill fills it in place. It holds no files, so filling it moves no file links.
+    """
+    return (
+        isinstance(row, TransportRow)
+        and row.origin is Origin.SAVED
+        and not row.saved_files
+        and not row.bill_ids
+        and not row.money.billed
+        and not row.money.invoice_number
+    )
+
+
 def _held(row: TransportRow | StayRow) -> bool:
     """A row that already holds a bill or is saved; a second copy of it is not added."""
-    return row.origin is Origin.SAVED or bool(row.bill_ids)
+    return (row.origin is Origin.SAVED and not is_placeholder(row)) or bool(row.bill_ids)
 
 
 @dataclass
@@ -67,7 +82,7 @@ def _score(row: TransportRow, journey: JourneyExtract) -> int:
     Both places must match: a bill never changes a row's route. Dates may differ by a day
     (overnight travel, plan vs actual). Saved rows are never matched: they don't change.
     """
-    if row.bill_ids or row.origin is Origin.SAVED:
+    if row.bill_ids or (row.origin is Origin.SAVED and not is_placeholder(row)):
         return 0
     if not (same_place(row.source, journey.source) and same_place(row.destination, journey.destination)):
         return 0

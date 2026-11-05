@@ -48,6 +48,16 @@ def analyse(ws: ClaimWorkspace) -> list[Finding]:
 
     for row in ws.transport:
         label = f"Journey {row.source or '?'} → {row.destination or '?'}"
+        if row.air_cleared:
+            add(
+                Finding(
+                    severity=Severity.WARNING,
+                    code="AIR_NOT_IN_PLAN",
+                    message=f"{label}: one bill shows air travel, but this tour has no air leg, so I left the "
+                    "travel mode empty.",
+                    row=row.key,
+                )
+            )
         if row.depart_date is None or row.arrive_date is None:
             add(
                 Finding(

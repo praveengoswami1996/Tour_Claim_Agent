@@ -75,11 +75,9 @@ class TourApiClient:
 
         Disabled on the allow-list until verified against UAT (TCA_ENABLED_WRITE_ENDPOINTS).
         """
-        envelope = await self._c.post_envelope(
-            "Claim/SaveRaiseClaimDraft",
-            data={"draftData": json.dumps(draft_data, ensure_ascii=False)},
-            files=files or None,
-        )
+        # Always multipart, as the web app sends it, even when no new files are attached.
+        form: list[Any] = [("draftData", (None, json.dumps(draft_data, ensure_ascii=False)))]
+        envelope = await self._c.post_envelope("Claim/SaveRaiseClaimDraft", files=form + list(files))
         data = envelope.data or {}
         draft_id = data.get("draftId") or data.get("DraftId")
         if not draft_id:

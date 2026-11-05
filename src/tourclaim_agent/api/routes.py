@@ -110,3 +110,38 @@ async def add_attachments(
     if len(files) > service.max_upload_files:
         raise AttachmentRejected(f"Please upload at most {service.max_upload_files} files at a time.")
     return _respond(await service.add_attachments(user, workflow_id, received), stream)
+
+
+@router.post("/workflows/{workflow_id}/bills/check", response_model=None)
+async def check_bills(
+    workflow_id: str,
+    user: UserDep,
+    service: ServiceDep,
+    stream: Annotated[bool, Query()] = True,
+) -> StreamingResponse | dict[str, Any]:
+    """Process bills that finished reading (§6.2). Poll every 20 s while bill_status.pending > 0."""
+    return _respond(await service.check_bills(user, workflow_id), stream)
+
+
+@router.post("/workflows/{workflow_id}/bills/{document_id}/retry", response_model=None)
+async def retry_bill(
+    workflow_id: str,
+    document_id: int,
+    user: UserDep,
+    service: ServiceDep,
+    stream: Annotated[bool, Query()] = True,
+) -> StreamingResponse | dict[str, Any]:
+    """ "Read it again" for a bill reported as unreadable (BIL-15)."""
+    return _respond(await service.retry_bill(user, workflow_id, document_id), stream)
+
+
+@router.post("/workflows/{workflow_id}/bills/{document_id}/cancel", response_model=None)
+async def cancel_bill(
+    workflow_id: str,
+    document_id: int,
+    user: UserDep,
+    service: ServiceDep,
+    stream: Annotated[bool, Query()] = True,
+) -> StreamingResponse | dict[str, Any]:
+    """Remove a bill that is taking too long to read (BIL-16)."""
+    return _respond(await service.cancel_bill(user, workflow_id, document_id), stream)

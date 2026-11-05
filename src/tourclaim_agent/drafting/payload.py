@@ -60,10 +60,11 @@ def _tax_fields(money: Money) -> dict[str, Any]:
 
 
 def _ranges(rows, files: list[int]) -> list[tuple[int, int]]:
-    """File index ranges over new files only. Saved rows hold no new files (their files are retained)."""
+    """File index ranges over new files only. Saved rows hold no new files (their files are retained),
+    except a saved planned leg that a bill has just filled."""
     ranges = []
     for row in rows:
-        if row.bill_ids and row.origin is not Origin.SAVED:
+        if row.bill_ids:
             start = len(files)
             files.extend(row.bill_ids)
             ranges.append((start, len(files) - 1))
@@ -91,6 +92,8 @@ _NOT_SENT = {
     "accomodationfilereferences",
     "accommodationfilereferences",
 }
+# A filled saved row keeps these from the saved draft.
+_KEPT_ON_FILL = {"Id", "TourNumber", "Remark"}
 # Lists the API takes as JSON text inside draftData.
 _JSON_TEXT_FIELDS = {"DailyAllowanceDto", "LeaveAvailedDto"}
 # Set from the workspace, never copied from the saved draft.
@@ -147,29 +150,31 @@ def build_draft_request(ws: ClaimWorkspace, emp_id: int) -> DraftRequest:
     stay_files: list[int] = []
     transport = []
     for row, (start, end) in zip(ws.transport, _ranges(ws.transport, transport_files), strict=True):
+        built = {
+            "Id": 0,
+            "DateOfTravelSource": _iso(row.depart_date),
+            "TimeOfTravelSource": row.depart_time or "",
+            "Source": row.source,
+            "ModeOfTravel": row.mode or "",
+            "DateOfTravelDestination": _iso(row.arrive_date),
+            "TimeOfTravelDestiNation": row.arrive_time or "",
+            "Destination": row.destination,
+            "DistanceINKm": _num(row.distance_km),
+            "BilledAmount": _num(row.money.billed),
+            "ClaimedAmount": _num(row.money.claimed),
+            "StartFileIndexCount": start,
+            "EndFileIndexCount": end,
+            "Remark": None,
+            "TourNumber": 1,
+            **_tax_fields(row.money),
+        }
         if row.origin is Origin.SAVED and row.raw is not None:
-            transport.append(_saved_row(row.raw, TRANSPORT_FIELDS))
-            continue
-        transport.append(
-            {
-                "Id": 0,
-                "DateOfTravelSource": _iso(row.depart_date),
-                "TimeOfTravelSource": row.depart_time or "",
-                "Source": row.source,
-                "ModeOfTravel": row.mode or "",
-                "DateOfTravelDestination": _iso(row.arrive_date),
-                "TimeOfTravelDestiNation": row.arrive_time or "",
-                "Destination": row.destination,
-                "DistanceINKm": _num(row.distance_km),
-                "BilledAmount": _num(row.money.billed),
-                "ClaimedAmount": _num(row.money.claimed),
-                "StartFileIndexCount": start,
-                "EndFileIndexCount": end,
-                "Remark": None,
-                "TourNumber": 1,
-                **_tax_fields(row.money),
-            }
-        )
+            saved = _saved_row(row.raw, TRANSPORT_FIELDS)
+            if row.bill_ids:  # a saved planned leg filled from a bill: same row, same id, new details
+                saved.update({k: v for k, v in built.items() if k not in _KEPT_ON_FILL})
+            transport.append(saved)
+        else:
+            transport.append(built)
     stays = []
     for row, (start, end) in zip(ws.stays, _ranges(ws.stays, stay_files), strict=True):
         if row.origin is Origin.SAVED and row.raw is not None:

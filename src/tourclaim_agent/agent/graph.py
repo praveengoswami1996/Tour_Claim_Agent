@@ -59,10 +59,13 @@ async def understand(state: AgentState, runtime: Runtime[AgentContext]) -> dict[
         message,
         IntentContext(pending_options=[o["label"] for o in options], today_iso=ctx.today.isoformat()),
     )
+    chosen_choice: dict[str, Any] | None = None
     if intent.goal is Goal.SELECT_OPTION and intent.selection and options:
         chosen = options[intent.selection - 1]
         intent = Intent(goal=Goal(pending["goal"]), tour=TourReference(tour_id=chosen["tour_id"]))
-    elif intent.goal is Goal.SELECT_OPTION:
+        chosen_choice = pending
+    elif intent.goal in (Goal.SELECT_OPTION, Goal.ASSIGN_BILLS):
+        # ASSIGN_BILLS only ever comes from answering the "which tour?" question.
         intent = Intent(goal=Goal.UNKNOWN)
     elif intent.goal is Goal.TOUR_STATUS and not has_reference(intent.tour) and state.get("focus_tour_id"):
         intent.tour = TourReference(tour_id=state["focus_tour_id"])
@@ -71,11 +74,30 @@ async def understand(state: AgentState, runtime: Runtime[AgentContext]) -> dict[
     ):
         # While a claim is being prepared, vague messages are about that claim.
         intent = Intent(goal=Goal.CLAIM_REVIEW)
-    return {"intent": intent.model_dump(mode="json"), "pending_choice": None, "events": []}
+    # An unanswered "which tour are these bills for?" stays open: those bills are still waiting.
+    keep = pending if pending.get("goal") == Goal.ASSIGN_BILLS.value and chosen_choice is None else None
+    return {
+        "intent": intent.model_dump(mode="json"),
+        "pending_choice": keep,
+        "chosen_choice": chosen_choice,
+        "events": [],
+    }
 
 
 def start_route(state: AgentState) -> str:
-    return "register_bills" if state.get("new_bills") else "understand"
+    return "register_bills" if state.get("new_bills") else "process_bills"
+
+
+def after_bills(state: AgentState) -> str:
+    return "end" if state.get("turn") == "check" else "understand"
+
+
+async def finish(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
+    """Ask a question raised by bill processing during this turn, unless the reply asked its own."""
+    queued = state.get("queued_choice")
+    if queued and not state.get("pending_choice"):
+        return {"pending_choice": queued, "queued_choice": None}
+    return {"queued_choice": None}
 
 
 def route(state: AgentState) -> str:
@@ -89,6 +111,7 @@ def route(state: AgentState) -> str:
         Goal.CLAIM_REVIEW: "review_claim",
         Goal.SAVE_DRAFT: "save_draft",
         Goal.CANCEL_CLAIM: "cancel_claim",
+        Goal.ASSIGN_BILLS: "assign_bills",
         Goal.ANSWER_CLARIFICATION: "not_yet_available",
         Goal.EDIT_CLAIM: "not_yet_available",
         Goal.SUPPLEMENTARY_CLAIM: "not_yet_available",
@@ -134,7 +157,7 @@ async def claimable_tours(state: AgentState, runtime: Runtime[AgentContext]) -> 
     return _reply(
         TextEvent(
             text=f"{len(tours)} approved tour{'s are' if len(tours) != 1 else ' is'} ready for a claim. "
-            "Say \"start a claim for tour <number>\" and I'll help you prepare it."
+            'Say "start a claim for tour <number>" and I\'ll help you prepare it.'
         ),
         TourListEvent(title="Ready to claim", tours=[TourCard.from_tour(t) for t in tours[:MAX_LISTED_TOURS]]),
     )
@@ -278,6 +301,7 @@ _NODES = {
     "review_claim": claim_flow.review_claim,
     "save_draft": claim_flow.save_draft,
     "cancel_claim": claim_flow.cancel_claim,
+    "assign_bills": bill_flow.assign_bills,
     "not_yet_available": not_yet_available,
     "policy_question": policy_question,
     "out_of_scope": out_of_scope,
@@ -289,12 +313,18 @@ def build_graph(checkpointer: Checkpointer | None = None):
     graph = StateGraph(AgentState, context_schema=AgentContext)
     graph.add_node("understand", understand)
     graph.add_node("register_bills", bill_flow.register_bills)
+    graph.add_node("process_bills", bill_flow.process_bills)
+    graph.add_node("finish", finish)
     for name, node in _NODES.items():
         graph.add_node(name, node)
 
-    graph.add_conditional_edges(START, start_route, {"understand": "understand", "register_bills": "register_bills"})
+    graph.add_conditional_edges(
+        START, start_route, {"process_bills": "process_bills", "register_bills": "register_bills"}
+    )
+    graph.add_conditional_edges("process_bills", after_bills, {"understand": "understand", "end": END})
     graph.add_conditional_edges("understand", route, {name: name for name in _NODES})
     graph.add_edge("register_bills", END)
     for name in _NODES:
-        graph.add_edge(name, END)
+        graph.add_edge(name, "finish")
+    graph.add_edge("finish", END)
     return graph.compile(checkpointer=checkpointer)

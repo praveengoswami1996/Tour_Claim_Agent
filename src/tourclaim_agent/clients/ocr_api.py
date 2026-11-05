@@ -69,5 +69,9 @@ class OcrApiClient:
         if document_ids:
             await self._c.post_envelope("Ocr/Cancel", json={"documentIds": document_ids})
 
+    async def retry(self, document_id: int) -> None:
+        """Put a failed document back in the queue to be read again (BIL-15)."""
+        await self._c.post_envelope(f"Ocr/Retry/{document_id}")
+
     async def get_file(self, document_id: int) -> tuple[bytes, str]:
         return await self._c.get_bytes(f"Ocr/GetFile/{document_id}")

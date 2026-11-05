@@ -7,6 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -21,7 +22,10 @@ def make_token(emp_code: str = "E1001", *, expires_in: int = 3600, **extra: Any)
     return jwt.encode(claims, "test-secret-not-used-for-verification", algorithm="HS256")
 
 
-def tour(tour_id: int, emp_id: int, *, kind_dest: str, status_id: int, status: str, start: str, **extra: Any):
+def tour(
+    tour_id: int, emp_id: int, *, kind_dest: str, status_id: int, status: str, start: str, days: int = 3, **extra: Any
+):
+    end = (date.fromisoformat(start) + timedelta(days=days - 1)).isoformat()
     return {
         "tourId": tour_id,
         "empId": emp_id,
@@ -30,8 +34,8 @@ def tour(tour_id: int, emp_id: int, *, kind_dest: str, status_id: int, status: s
         "source": "Noida",
         "destination": kind_dest,
         "tourStartDate": f"{start}T00:00:00",
-        "tantetiveEndDate": f"{start}T00:00:00",
-        "totalDays": 3,
+        "tantetiveEndDate": f"{end}T00:00:00",
+        "totalDays": days,
         "status": status,
         "statusId": status_id,
         "recipientId": 9001,
@@ -76,6 +80,14 @@ class FakeBackend:
     released: list[int] = field(default_factory=list)
     cancelled: list[int] = field(default_factory=list)
     taken_elsewhere: set[int] = field(default_factory=set)
+    retried: list[int] = field(default_factory=list)
+    # Failure switches: endpoint suffix -> HTTP statuses returned by the next calls, one per call.
+    failures: dict[str, list[int]] = field(default_factory=dict)
+    next_draft_id: int = 9001
+    next_file_id: int = 100
+
+    def fail_next(self, endpoint: str, *statuses: int) -> None:
+        self.failures.setdefault(endpoint, []).extend(statuses)
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -98,6 +110,9 @@ class FakeBackend:
         path = request.url.path
         if self.fail_with or not request.url.path.startswith("/api/"):
             return None
+        for endpoint, statuses in self.failures.items():
+            if path.endswith(endpoint) and statuses:
+                return httpx.Response(statuses.pop(0), json={"message": "failure"})
         if m := re.search(r"Claim/RaiseClaimRequest/(\d+)$", path):
             prefill = self.prefills.get(int(m.group(1)))
             return _env(prefill) if prefill else _env(None, status=404, message="Tour id is not found.")
@@ -107,11 +122,13 @@ class FakeBackend:
         if path.endswith("Claim/SaveRaiseClaimDraft"):
             parts = _multipart(request)
             draft = json.loads(parts["draftData"][0][1])
-            self.saved_requests.append(
-                {"draft": draft, "files": [(k, n) for k, vals in parts.items() for n, _ in vals if n]}
-            )
-            draft_id = draft.get("DraftId") or 9001
-            self.drafts[draft["EmpTourPlanId"]] = {"draftId": draft_id, "empTourPlanId": draft["EmpTourPlanId"]}
+            files = [(k, n) for k, vals in parts.items() for n, _ in vals if n]
+            self.saved_requests.append({"draft": draft, "files": files})
+            draft_id = draft.get("DraftId")
+            if not draft_id:
+                draft_id = self.next_draft_id
+                self.next_draft_id += 1
+            self.drafts[draft["EmpTourPlanId"]] = self._stored_draft(draft_id, draft, files)
             return _env({"draftId": draft_id, "message": "Draft saved successfully."})
         if path.endswith("Ocr/Upload"):
             parts = _multipart(request)
@@ -153,15 +170,66 @@ class FakeBackend:
                     marked.append(doc_id)
             return _env({"marked": marked})
         if path.endswith("Ocr/Release"):
-            self.released += json.loads(request.content)["documentIds"]
-            return _env({"released": []})
+            ids = json.loads(request.content)["documentIds"]
+            self.released += ids
+            for doc_id in ids:
+                if doc_id in self.ocr_docs:
+                    self.ocr_docs[doc_id]["isRead"] = False
+            return _env({"released": ids})
         if path.endswith("Ocr/Cancel"):
-            self.cancelled += json.loads(request.content)["documentIds"]
-            return _env({"cancelled": []})
+            ids = json.loads(request.content)["documentIds"]
+            self.cancelled += ids
+            for doc_id in ids:
+                if doc_id in self.ocr_docs:
+                    self.ocr_docs[doc_id]["status"] = "Cancelled"
+            return _env({"cancelled": ids})
+        if m := re.search(r"Ocr/Retry/(\d+)$", path):
+            doc = self.ocr_docs[int(m.group(1))]
+            self.retried.append(doc["documentId"])
+            doc.update(status="Pending", isRead=False, response=None, errorMessage=None)
+            return _env({"documentId": doc["documentId"], "status": "Pending"})
         if m := re.search(r"Ocr/GetFile/(\d+)$", path):
             doc = self.ocr_docs[int(m.group(1))]
             return httpx.Response(200, content=doc["content"], headers={"content-type": "application/pdf"})
         return None
+
+    def _stored_draft(self, draft_id: int, draft: dict[str, Any], files: list[tuple[str, str]]) -> dict[str, Any]:
+        """Store a saved draft the way the Tour API returns it: rows plus file references by rowIndex."""
+        previous = (self.drafts.get(draft["EmpTourPlanId"]) or {}).get("draftData") or {}
+        data = {k: v for k, v in draft.items() if not k.startswith("Retained")}
+        for rows_field, files_field, refs_field, retained_field in (
+            (
+                "TransportaionDetailDtos",
+                "transportationFiles",
+                "transportationFileReferences",
+                "RetainedTransportationFileIds",
+            ),
+            (
+                "AccomodationDetailDto",
+                "accommodationFiles",
+                "accomodationFileReferences",
+                "RetainedAccomodationFileIds",
+            ),
+        ):
+            retained = set(draft.get(retained_field) or [])
+            refs = [r for r in previous.get(refs_field, []) if r["fileId"] in retained]
+            new_names = [name for kind, name in files if kind == files_field]
+            for index, row in enumerate(json.loads(draft.get(rows_field) or "[]")):
+                start, end = row.get("StartFileIndexCount", -1), row.get("EndFileIndexCount", -1)
+                if start is None or start < 0:
+                    continue
+                for i in range(start, end + 1):
+                    refs.append(
+                        {
+                            "fileId": self.next_file_id,
+                            "originalFileName": new_names[i],
+                            "fileSize": 1,
+                            "rowIndex": index,
+                        }
+                    )
+                    self.next_file_id += 1
+            data[refs_field] = refs
+        return {"draftId": draft_id, "empTourPlanId": draft["EmpTourPlanId"], "lastSavedDate": "now", "draftData": data}
 
     def _read_routes(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -270,6 +338,20 @@ FLIGHT_OUT = {
             "taxStructure": "IGST",
             "billIGST": 310,
         },
+    },
+}
+
+FLIGHT_BACK = {
+    "meta": {"per_file_results": [{"filename": "back.pdf", "success": True, "bill_type": "flight"}]},
+    "tourDetails": {
+        "startDate": "2026-08-22",
+        "startTime": "18:05",
+        "endDate": "2026-08-22",
+        "endTime": "20:15",
+        "from": "Mumbai",
+        "to": "Delhi (Noida)",
+        "modeOfTravel": "Flight",
+        "amountDetails": {"billedAmount": 5800, "invoiceNo": "AI-456", "taxStructure": "IGST", "billIGST": 280},
     },
 }
 

@@ -7,7 +7,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.fakes import FLIGHT_OUT, HOTEL, PDF, FakeBackend, make_token
+from tests.fakes import FLIGHT_BACK, FLIGHT_OUT, HOTEL, PDF, FakeBackend, make_token
 from tests.test_api import auth, say, start, texts
 from tourclaim_agent.main import create_app
 
@@ -164,13 +164,29 @@ class TestSave:
         # Never submitted: no submit endpoint was called.
         assert not any("Submit" in c for c in backend.calls)
 
-    def test_second_save_updates_same_draft_and_replaces_files(self, saving_client, backend):
+    def test_save_after_automatic_save_sends_nothing_again(self, saving_client, backend):
         workflow_id = prepared(saving_client, backend)
         say(saving_client, workflow_id, "save draft")
-        say(saving_client, workflow_id, "save draft")
+        events = say(saving_client, workflow_id, "save draft")
+        assert len(backend.saved_requests) == 1, "the bills were saved once, automatically"
+        assert event(events, "draft_saved")["draft_id"] == 9001
+
+    def test_a_later_bill_is_added_to_the_same_draft_and_saved_files_are_kept(self, saving_client, backend):
+        workflow_id = prepared(saving_client, backend)
+        say(saving_client, workflow_id, "review my claim")
+        first = backend.saved_requests[0]["draft"]
+        saved_files = [r["fileId"] for r in backend.drafts[503]["draftData"]["transportationFileReferences"]]
+        assert upload(saving_client, workflow_id, ("back.pdf", PDF + b"back")).status_code == 200
+        backend.finish_ocr("back.pdf", FLIGHT_BACK)
+        events = saving_client.post(f"/v1/workflows/{workflow_id}/bills/check?stream=false", headers=auth()).json()
         second = backend.saved_requests[1]["draft"]
-        assert second["DraftId"] == 9001
-        assert second["RetainedTransportationFileIds"] == [] and second["RetainedAccomodationFileIds"] == []
+        assert second["DraftId"] == 9001 and first["DraftId"] is None
+        assert second["RetainedTransportationFileIds"] == saved_files
+        assert backend.saved_requests[1]["files"] == [("transportationFiles", "back.pdf")]
+        rows = json.loads(second["TransportaionDetailDtos"])
+        assert len(rows) == 2, "the planned return leg was filled in place, not added again"
+        assert [(r["StartFileIndexCount"], r["EndFileIndexCount"]) for r in rows] == [(-1, -1), (0, 0)]
+        assert event(events["events"], "bill_report")["files"][0]["outcome"] == "saved"
 
     def test_blocking_problem_prevents_save(self, saving_client, backend):
         backend.prefills[503] = {
@@ -182,11 +198,17 @@ class TestSave:
         events = say(saving_client, workflow_id, "save draft")
         assert "Not saved yet" in texts(events) and backend.saved_requests == []
 
-    def test_draft_made_elsewhere_meanwhile_is_not_overwritten(self, saving_client, backend):
+    def test_bills_are_added_to_a_draft_made_elsewhere_meanwhile(self, saving_client, backend):
         workflow_id = prepared(saving_client, backend)
-        backend.drafts[503] = {"draftId": 55, "empTourPlanId": 503}
+        backend.drafts[503] = {
+            "draftId": 55,
+            "empTourPlanId": 503,
+            "draftData": {"LeaveAvailedDto": "[]", "remarks": "from the form"},
+        }
         events = say(saving_client, workflow_id, "save draft")
-        assert "haven't overwritten" in texts(events) and backend.saved_requests == []
+        assert event(events, "draft_saved")["draft_id"] == 55
+        [request] = backend.saved_requests
+        assert request["draft"]["DraftId"] == 55 and request["draft"]["remarks"] == "from the form"
 
 
 class TestCancel:

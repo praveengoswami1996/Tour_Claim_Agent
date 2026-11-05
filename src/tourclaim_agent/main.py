@@ -33,6 +33,7 @@ from tourclaim_agent.service import (
     AgentService,
     AttachmentRejected,
     ReadOnlySession,
+    UploadNotFound,
     WorkflowNotFound,
 )
 from tourclaim_agent.state.registry import WorkflowRegistry
@@ -124,6 +125,10 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
     @app.exception_handler(AttachmentRejected)
     async def _attachment(_: Request, exc: AttachmentRejected) -> JSONResponse:
         return _error(400, "attachment_rejected", str(exc))
+
+    @app.exception_handler(UploadNotFound)
+    async def _upload_missing(_: Request, exc: UploadNotFound) -> JSONResponse:
+        return _error(404, "bill_not_found", "This bill was not found.")
 
     @app.exception_handler(WorkflowNotFound)
     async def _workflow_missing(_: Request, exc: WorkflowNotFound) -> JSONResponse:

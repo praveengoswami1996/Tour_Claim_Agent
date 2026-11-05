@@ -26,7 +26,7 @@ from tourclaim_agent.config import Settings
 from tourclaim_agent.llm.intent import IntentExtractor
 from tourclaim_agent.state.records import WorkflowRecord
 from tourclaim_agent.state.registry import WorkflowRegistry
-from tourclaim_agent.state.uploads import UploadRecord, UploadStore
+from tourclaim_agent.state.uploads import UploadRecord, UploadStatus, UploadStore
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,10 @@ class WorkflowNotFound(Exception):
 
 class ReadOnlySession(Exception):
     """The session is read-only (impersonation), so nothing may be written (FRS IDN-05)."""
+
+
+class UploadNotFound(Exception):
+    """No upload with this document id belongs to the caller."""
 
 
 class AttachmentRejected(Exception):
@@ -164,6 +168,8 @@ class AgentService:
                 "read_only": user.employee.read_only,
             },
             "pending": {"action_needed_count": action_needed},
+            # BIL-64: "Processing 2 bills..." / "Your bills are read. Open me to see where they went."
+            "bills": await self._uploads.counts(user.employee.emp_code, self._settings.bill_report_keep_days),
             "workflows": [
                 {"workflow_id": w.workflow_id, "title": w.title, "updated_at": w.updated_at} for w in workflows
             ],
@@ -185,16 +191,73 @@ class AgentService:
             raise WorkflowNotFound(workflow_id)
         return record
 
+    @staticmethod
+    def _turn(kind: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+        return {
+            "messages": messages,
+            "events": [],
+            "bill_events": [],
+            "new_bills": [],
+            "turn": kind,
+            "chosen_choice": None,
+        }
+
     async def send_message(self, user: RequestUser, workflow_id: str, text: str) -> list[dict[str, Any]]:
+        """Finished bills are processed first, so the reply includes fresh results (BIL-14)."""
         record = await self._owned(user, workflow_id)
         text = " ".join(text.split())[:MAX_MESSAGE_CHARS]
-        result = await self._graph.ainvoke(
-            {"messages": [{"role": "user", "text": text}], "events": [], "new_bills": []},
-            self._config(workflow_id),
-            context=self._context(user, workflow_id),
-        )
+        async with self._lock(user.employee.emp_code):
+            result = await self._graph.ainvoke(
+                self._turn("message", [{"role": "user", "text": text}]),
+                self._config(workflow_id),
+                context=self._context(user, workflow_id),
+            )
         await self._registry.touch(workflow_id, title=text[:60] if record.title == NEW_TITLE else None)
-        return list(result.get("events", []))
+        return list(result.get("bill_events") or []) + list(result.get("events") or [])
+
+    async def check_bills(self, user: RequestUser, workflow_id: str) -> list[dict[str, Any]]:
+        """POST bills/check (§6.2): process finished bills; always ends with a bill_status event."""
+        await self._owned(user, workflow_id)
+        async with self._lock(user.employee.emp_code):
+            result = await self._graph.ainvoke(
+                self._turn("check", []),
+                self._config(workflow_id),
+                context=self._context(user, workflow_id),
+            )
+        return list(result.get("bill_events") or [])
+
+    async def _own_upload(self, user: RequestUser, workflow_id: str, document_id: int) -> UploadRecord:
+        await self._owned(user, workflow_id)
+        if user.employee.read_only:
+            raise ReadOnlySession()
+        records = await self._uploads.get(user.employee.emp_code, [document_id])
+        if not records:
+            raise UploadNotFound(document_id)
+        return records[0]
+
+    async def retry_bill(self, user: RequestUser, workflow_id: str, document_id: int) -> list[dict[str, Any]]:
+        """ "Read it again" for a bill that couldn't be read (BIL-15)."""
+        record = await self._own_upload(user, workflow_id, document_id)
+        emp_code = user.employee.emp_code
+        async with self._lock(emp_code):
+            await OcrApiClient(self._client(Service.TOUR, user.token)).retry(document_id)
+            await self._uploads.update(
+                emp_code, document_id, status=UploadStatus.PENDING.value, outcome=None, outcome_detail=None, reported=1
+            )
+            status = await bill_flow.bill_status(self._uploads, emp_code)
+        text = f"I'm reading {record.file_name} again."
+        return [{"type": "text", "text": text}, status]
+
+    async def cancel_bill(self, user: RequestUser, workflow_id: str, document_id: int) -> list[dict[str, Any]]:
+        """Remove a bill that is taking too long to read (BIL-16)."""
+        record = await self._own_upload(user, workflow_id, document_id)
+        emp_code = user.employee.emp_code
+        async with self._lock(emp_code):
+            if record.status == UploadStatus.PENDING:
+                await OcrApiClient(self._client(Service.TOUR, user.token)).cancel([document_id])
+                await self._uploads.update(emp_code, document_id, status=UploadStatus.CANCELLED.value, reported=1)
+            status = await bill_flow.bill_status(self._uploads, emp_code)
+        return [{"type": "text", "text": f"I've removed {record.file_name}."}, status]
 
     # ------------------------------------------------------------------ attachments
 
@@ -277,8 +340,7 @@ class AgentService:
             log.info("uploaded %d bill(s) in workflow %s", len(new_bills), workflow_id)
             result = await self._graph.ainvoke(
                 {
-                    "messages": [{"role": "user", "text": f"[uploaded {len(new_bills)} file(s)]"}],
-                    "events": [],
+                    **self._turn("upload", [{"role": "user", "text": f"[uploaded {len(new_bills)} file(s)]"}]),
                     "new_bills": new_bills,
                 },
                 self._config(workflow_id),

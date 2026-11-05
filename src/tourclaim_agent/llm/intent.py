@@ -23,6 +23,8 @@ class Goal(StrEnum):
     CLAIM_REVIEW = "claim_review"
     SAVE_DRAFT = "save_draft"
     CANCEL_CLAIM = "cancel_claim"
+    BILL_STATUS = "bill_status"  # "are my bills read?", "what happened to my bills"
+    ASSIGN_BILLS = "assign_bills"  # only through a "which tour are these bills for?" choice
     ANSWER_CLARIFICATION = "answer_clarification"
     EDIT_CLAIM = "edit_claim"
     SUPPLEMENTARY_CLAIM = "supplementary_claim"

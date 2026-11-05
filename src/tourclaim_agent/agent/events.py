@@ -123,6 +123,35 @@ class BillStatusEvent(BaseModel):
     files: list[BillFileStatus] = Field(default_factory=list)
 
 
+class BillReportLine(BaseModel):
+    """What happened to one file (BIL-61)."""
+
+    file_name: str
+    outcome: str
+    tour_id: int | None = None
+    found: str | None = None  # "ticket Noida → Mumbai, 05 Oct 2026"
+    detail: str | None = None
+    retry_document_id: int | None = None  # "Read it again" (BIL-15)
+    cancel_document_id: int | None = None  # "Remove it" for a slow bill (BIL-16)
+
+
+class BillReportTour(BaseModel):
+    tour_id: int
+    route: str
+    dates: str
+    draft_id: int | None = None
+    coverage: str | None = None  # "Every day of the tour is now covered." (BIL-62)
+
+
+class BillReportEvent(BaseModel):
+    """One line per file after a check that processed bills (§6.3)."""
+
+    type: Literal["bill_report"] = "bill_report"
+    title: str = "What I found in your bills"
+    files: list[BillReportLine]
+    tours: list[BillReportTour] = Field(default_factory=list)
+
+
 class JourneyLine(BaseModel):
     key: str
     origin: str
@@ -196,6 +225,7 @@ AgentEvent = Annotated[
     | ChoicesEvent
     | UploadRequestEvent
     | BillStatusEvent
+    | BillReportEvent
     | ClaimSummaryEvent
     | DraftSavedEvent,
     Field(discriminator="type"),

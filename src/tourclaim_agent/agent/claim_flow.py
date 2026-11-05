@@ -43,10 +43,12 @@ from tourclaim_agent.agent.resolver import has_reference, resolve_tours, tour_la
 from tourclaim_agent.clients.errors import BackendError
 from tourclaim_agent.domain.claim import ClaimPrefill, ClaimWorkspace
 from tourclaim_agent.drafting.analysis import Finding, Severity, analyse, blocking
-from tourclaim_agent.drafting.merge import merge_bill, same_place
-from tourclaim_agent.drafting.ocr_mapping import extract_bill
-from tourclaim_agent.drafting.payload import build_draft_request, claimed_total
+from tourclaim_agent.drafting.bill_pipeline import DraftUnusable, has_unsaved_rows, write_draft
+from tourclaim_agent.drafting.merge import same_place
+from tourclaim_agent.drafting.payload import claimed_total
+from tourclaim_agent.drafting.saved_draft import workspace_from_draft
 from tourclaim_agent.llm.intent import Goal
+from tourclaim_agent.state.uploads import Outcome, UploadStatus
 
 log = logging.getLogger(__name__)
 
@@ -241,39 +243,6 @@ async def start_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dict
 # ----------------------------------------------------------------------------- bills
 
 
-async def refresh_bills(ctx: AgentContext, ws: ClaimWorkspace) -> None:
-    """Pull finished OCR results for this claim's bills and merge them into the rows."""
-    if not ws.pending_bills:
-        return
-    documents = await ctx.ocr.list_documents(f"agent:{ctx.workflow_id}:", include_response=True)
-    by_id = {d.document_id: d for d in documents}
-    finished: list[int] = []
-    for bill in ws.pending_bills:
-        doc = by_id.get(bill.document_id)
-        if doc is None:
-            continue
-        bill.status = doc.status
-        if doc.status in ("Completed", "Failed"):
-            finished.append(bill.document_id)
-    if not finished:
-        return
-    won = await ctx.ocr.mark_as_read(finished)
-    for document_id in finished:
-        bill = ws.bill(document_id)
-        doc = by_id[document_id]
-        if document_id not in won:
-            # Another client (e.g. the web app) already took this result; don't apply it twice.
-            bill.kind, bill.error = "unreadable", "used elsewhere"
-            continue
-        if doc.status == "Failed":
-            bill.kind, bill.error = "unreadable", doc.error_message or "could not be read"
-            continue
-        merge_bill(ws, bill, extract_bill(doc.response))
-
-
-# ----------------------------------------------------------------------------- review
-
-
 def _next_step(ws: ClaimWorkspace, findings: list[Finding], save_enabled: bool) -> str:
     if ws.pending_bills:
         return f"I'm still reading {len(ws.pending_bills)} bill(s). Ask me again in a minute."
@@ -284,21 +253,15 @@ def _next_step(ws: ClaimWorkspace, findings: list[Finding], save_enabled: bool) 
             "Saving drafts from the chat isn't switched on yet. You can enter these details in the claim form "
             "from the Raise Claim screen."
         )
+    if not has_unsaved_rows(ws):
+        return (
+            f"Everything here is saved in draft {ws.draft_id}. Open it in the claim form to add daily allowance, "
+            "review everything and submit."
+        )
     return 'Say "save draft" to save this as a draft that you can finish and submit in the claim form.'
 
 
-async def review_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
-    ctx = runtime.context
-    ws = _workspace(state)
-    if ws is None:
-        return reply(
-            TextEvent(text='You\'re not preparing a claim right now. Say "start a claim for my <place> tour".')
-        )
-    try:
-        await refresh_bills(ctx, ws)
-    except BackendError as exc:
-        result = backend_problem(exc, "check your bills with")
-        return {**result, "claim": _dump(ws)}
+def _review(ctx: AgentContext, ws: ClaimWorkspace) -> list[Any]:
     findings = analyse(ws)
     warnings = sum(1 for f in findings if f.severity is Severity.WARNING)
     text = (
@@ -307,17 +270,34 @@ async def review_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dic
     )
     if warnings:
         text += f" {warnings} point(s) to check."
-    return reply(
+    return [
         TextEvent(text=f"{text} {_next_step(ws, findings, ctx.save_draft_enabled)}"),
         summary_event(ws, findings, save_enabled=ctx.save_draft_enabled),
-        claim=_dump(ws),
-    )
+    ]
+
+
+async def review_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
+    """Finished bills were already processed at the start of this turn (BIL-14)."""
+    ctx = runtime.context
+    ws = _workspace(state)
+    if ws is None:
+        parked = [ClaimWorkspace.model_validate(v) for v in (state.get("parked") or {}).values()]
+        if parked:
+            return reply(*[event for p in parked for event in _review(ctx, p)])
+        return reply(
+            TextEvent(
+                text="You're not preparing a claim right now. Upload your tickets and hotel bills and I'll find "
+                'the tour and save them into its draft, or say "start a claim for my <place> tour".'
+            )
+        )
+    return reply(*_review(ctx, ws), claim=_dump(ws))
 
 
 # ----------------------------------------------------------------------------- save
 
 
 async def save_draft(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
+    """The explicit "save draft" command. Unlike automatic saving, it refuses while blocking problems exist (BIL-51)."""
     ctx = runtime.context
     ws = _workspace(state)
     if ws is None:
@@ -330,16 +310,16 @@ async def save_draft(state: AgentState, runtime: Runtime[AgentContext]) -> dict[
             ),
             summary_event(ws, analyse(ws), save_enabled=False),
         )
+    findings = analyse(ws)
+    if ws.pending_bills or blocking(findings):
+        return reply(
+            TextEvent(text=f"Not saved yet. {_next_step(ws, findings, True)}"),
+            summary_event(ws, findings, save_enabled=True),
+            claim=_dump(ws),
+        )
+    if not has_unsaved_rows(ws):
+        return _saved(ws)
     try:
-        await refresh_bills(ctx, ws)
-        findings = analyse(ws)
-        if ws.pending_bills or blocking(findings):
-            return reply(
-                TextEvent(text=f"Not saved yet. {_next_step(ws, findings, True)}"),
-                summary_event(ws, findings, save_enabled=True),
-                claim=_dump(ws),
-            )
-
         # Re-check against the backend before writing (FRS STA-05).
         claimable = {t.tour_id for t in await ctx.tours.list_claimable_tours(ctx.employee.emp_id)}
         if ws.tour_id not in claimable:
@@ -348,46 +328,27 @@ async def save_draft(state: AgentState, runtime: Runtime[AgentContext]) -> dict[
                 claim=_dump(ws),
             )
         existing = await ctx.tours.get_outside_draft(ctx.employee.emp_id, ws.tour_id)
-        if existing is not None and ws.draft_id is None:
-            if ws.save_attempted:
+        if existing is not None and existing.draft_id != ws.draft_id:
+            if ws.save_attempted and ws.draft_id is None:
                 # Our earlier save went through even though we didn't get a clear answer.
-                ws.draft_id = existing.draft_id
-                return _saved(ws)
+                saved = workspace_from_draft(ws.tour_id, existing)
+                saved.bills = ws.bills
+                return _saved(saved)
             return reply(
                 TextEvent(
                     text="A draft for this tour was saved from the claim form meanwhile. I haven't overwritten it; "
-                    "please continue there."
+                    'say "start a claim" for this tour again and I\'ll add your bills to that draft.'
                 ),
                 claim=_dump(ws),
             )
-
-        request = build_draft_request(ws, ctx.employee.emp_id)
-        if ws.draft_id is not None:
-            # Replace the files of our own earlier save rather than adding duplicates.
-            request.draft_data["RetainedTransportationFileIds"] = []
-            request.draft_data["RetainedAccomodationFileIds"] = []
-        files = await _download_files(ctx, ws, request.transport_file_ids, request.stay_file_ids)
         ws.save_attempted = True
-        draft_id = await ctx.tours.save_outside_draft(request.draft_data, files)
+        saved = await write_draft(ctx.tours, ctx.ocr, ctx.employee.emp_id, ws, None)
+    except DraftUnusable as exc:
+        return reply(NoticeEvent(level="warning", text=f"Not saved: {exc}."), claim=_dump(ws))
     except BackendError as exc:
         result = backend_problem(exc, "save the draft in")
         return {**result, "claim": _dump(ws)}
-
-    ws.draft_id = draft_id
-    try:
-        check = await ctx.tours.get_outside_draft(ctx.employee.emp_id, ws.tour_id)
-    except BackendError:
-        check = None
-    if check is None or check.draft_id != draft_id:
-        return reply(
-            NoticeEvent(
-                level="warning",
-                text=f"The Tour system said the draft was saved (number {draft_id}), but I couldn't read it back. "
-                "Please check it in the claim form.",
-            ),
-            claim=_dump(ws),
-        )
-    return _saved(ws)
+    return _saved(saved)
 
 
 def _saved(ws: ClaimWorkspace) -> dict[str, Any]:
@@ -401,33 +362,35 @@ def _saved(ws: ClaimWorkspace) -> dict[str, Any]:
     )
 
 
-async def _download_files(
-    ctx: AgentContext, ws: ClaimWorkspace, transport_ids: list[int], stay_ids: list[int]
-) -> list[tuple[str, tuple[str, bytes, str]]]:
-    cache: dict[int, tuple[bytes, str]] = {}
-    parts: list[tuple[str, tuple[str, bytes, str]]] = []
-    for field, ids in (("transportationFiles", transport_ids), ("accommodationFiles", stay_ids)):
-        for document_id in ids:
-            if document_id not in cache:
-                cache[document_id] = await ctx.ocr.get_file(document_id)
-            content, content_type = cache[document_id]
-            bill = ws.bill(document_id)
-            parts.append((field, (bill.file_name if bill else f"bill-{document_id}", content, content_type)))
-    return parts
-
-
 # ----------------------------------------------------------------------------- cancel
 
 
 async def cancel_claim(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
+    """Stop preparing the claim. Nothing already saved into a draft is changed or handed back (BIL-73)."""
     ctx = runtime.context
     ws = _workspace(state)
     if ws is None:
         return reply(TextEvent(text="There's no claim in progress."))
+    emp_code = ctx.employee.emp_code
+    records = {r.document_id: r for r in await ctx.uploads.get(emp_code, [b.document_id for b in ws.bills])}
+    pending = [b.document_id for b in ws.pending_bills]
+    # Results applied only in this workspace go back to the queue; those saved in a draft stay used.
+    unsaved = [
+        b.document_id
+        for b in ws.bills
+        if b.status in ("Completed", "Failed")
+        and (b.document_id not in records or records[b.document_id].outcome == Outcome.READY_NOT_SAVED)
+    ]
     try:
-        await ctx.ocr.cancel([b.document_id for b in ws.pending_bills])
-        await ctx.ocr.release([b.document_id for b in ws.bills if b.status in ("Completed", "Failed")])
+        await ctx.ocr.cancel(pending)
+        await ctx.ocr.release(unsaved)
     except BackendError as exc:
         log.warning("could not tidy OCR documents on cancel: %s", exc.endpoint)
+    for document_id in pending:
+        if document_id in records:
+            await ctx.uploads.update(emp_code, document_id, status=UploadStatus.CANCELLED.value, reported=1)
+    for document_id in unsaved:
+        if document_id in records:
+            await ctx.uploads.update(emp_code, document_id, status=UploadStatus.RELEASED.value, reported=1)
     saved = f" Draft {ws.draft_id} stays saved in the claim form." if ws.draft_id else ""
     return reply(TextEvent(text=f"I've stopped preparing the claim for Tour {ws.tour_id}.{saved}"), claim=None)

@@ -31,6 +31,16 @@ class AgentState(TypedDict, total=False):
     claim: dict[str, Any] | None
     # Bills uploaded in this request, already recorded in the upload store (input only).
     new_bills: list[dict[str, Any]]
+    # What kind of request this turn is: "message", "upload" or "check" (input only).
+    turn: str
+    # Events about bills produced before the message is handled (BIL-14); returned first.
+    bill_events: list[dict[str, Any]]
+    # A "which tour?" question raised by bill processing during a message turn; asked after the reply.
+    queued_choice: dict[str, Any] | None
+    # The choice the employee just answered (set by `understand`).
+    chosen_choice: dict[str, Any] | None
+    # With saving switched off: claims of tours other than the claim in progress, by tour id (BIL-49).
+    parked: dict[str, dict[str, Any]]
 
 
 @dataclass
