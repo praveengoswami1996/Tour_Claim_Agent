@@ -68,7 +68,7 @@ class TourApiClient:
         )
         if envelope is None or not envelope.data:
             return None
-        return ExistingDraft.model_validate(envelope.data)
+        return ExistingDraft.from_backend(envelope.data)
 
     async def save_outside_draft(self, draft_data: dict[str, Any], files: list[FilePart]) -> int:
         """POST Claim/SaveRaiseClaimDraft (multipart). Returns the draft ID.

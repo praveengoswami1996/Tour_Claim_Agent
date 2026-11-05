@@ -7,6 +7,7 @@ not calculations of entitlement (FRS P1).
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
@@ -63,9 +64,43 @@ class ClaimPrefill(BackendModel):
         return date.fromordinal(start.toordinal() + max(self.header.no_of_days, 1) - 1)
 
 
-class ExistingDraft(BackendModel):
-    draft_id: int = Field(alias="draftId")
-    last_saved: str | None = Field(default=None, alias="lastSavedDate")
+class ExistingDraft(BaseModel):
+    """GET Claim/GetRaiseClaimDraft: a saved outside-jurisdiction draft (§5.2).
+
+    `data` is the draft's content (`draftData`, which may be nested, flat, or a JSON string),
+    kept whole so fields the agent does not model are written back unchanged.
+    """
+
+    draft_id: int
+    last_saved: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_backend(cls, raw: Any) -> ExistingDraft | None:
+        if not isinstance(raw, dict):
+            return None
+        content = field_ci(raw, "draftData")
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except ValueError:
+                content = None
+        data = content if isinstance(content, dict) else raw
+        draft_id = field_ci(raw, "draftId") or field_ci(data, "draftId")
+        try:
+            draft_id = int(draft_id)
+        except (TypeError, ValueError):
+            return None
+        last_saved = field_ci(raw, "lastSavedDate")
+        return cls(draft_id=draft_id, last_saved=str(last_saved) if last_saved else None, data=dict(data))
+
+
+def field_ci(obj: Any, name: str) -> Any:
+    """A field by name, ignoring case (the Tour API mixes camelCase and PascalCase)."""
+    if not isinstance(obj, dict):
+        return None
+    lowered = name.lower()
+    return next((v for k, v in obj.items() if isinstance(k, str) and k.lower() == lowered), None)
 
 
 # ----------------------------------------------------------------- working copy
@@ -75,6 +110,7 @@ class Origin(StrEnum):
     PLAN = "plan"  # from the approved tentative tour plan
     BILL = "bill"  # read from an uploaded bill
     EMPLOYEE = "employee"  # stated by the employee
+    SAVED = "saved"  # already in the tour's saved draft: never moved, changed or removed
 
 
 class TaxStructure(StrEnum):
@@ -106,6 +142,15 @@ class Bill(BaseModel):
     used_by: list[str] = Field(default_factory=list)  # row keys the bill is attached to
 
 
+class SavedFile(BaseModel):
+    """A file the server already holds for a saved row. Tied to the row by position (row_index)."""
+
+    file_id: Any
+    name: str
+    size: int = 0
+    row_index: int
+
+
 class TransportRow(BaseModel):
     key: str
     origin: Origin
@@ -119,6 +164,11 @@ class TransportRow(BaseModel):
     distance_km: Decimal | None = None
     money: Money = Field(default_factory=Money)
     bill_ids: list[int] = Field(default_factory=list)
+    saved_files: list[SavedFile] = Field(default_factory=list)
+    # The row exactly as the saved draft holds it; written back unchanged (Origin.SAVED only).
+    raw: dict[str, Any] | None = None
+    # The bill showed air travel but the approved plan has no air leg, so the mode was left empty (BIL-24).
+    air_cleared: bool = False
 
 
 class StayRow(BaseModel):
@@ -135,6 +185,8 @@ class StayRow(BaseModel):
     free_accommodation: bool = False
     money: Money = Field(default_factory=Money)
     bill_ids: list[int] = Field(default_factory=list)
+    saved_files: list[SavedFile] = Field(default_factory=list)
+    raw: dict[str, Any] | None = None
 
 
 class ClaimWorkspace(BaseModel):
@@ -150,6 +202,9 @@ class ClaimWorkspace(BaseModel):
     stays: list[StayRow] = Field(default_factory=list)
     bills: list[Bill] = Field(default_factory=list)
     draft_id: int | None = None
+    # The saved draft's content (§5.2), when the workspace was read from one. Fields the agent does
+    # not model (leave, daily allowance, remarks, ...) are written back from here unchanged.
+    raw_draft: dict[str, Any] | None = None
     # Set before a save is sent, so an unclear outcome can be reconciled by reading back (EXE-12).
     save_attempted: bool = False
     next_key: int = 1

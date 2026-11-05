@@ -131,10 +131,17 @@ class TestAnalysis:
         ws.transport[0].depart_date = None
         assert "MISSING_DATE" in {f.code for f in blocking(analyse(ws))}
 
+    def test_second_copy_of_a_journey_is_not_added_again(self):
+        ws = workspace()
+        merge_bill(ws, bill(1, "out.pdf"), extract_bill(FLIGHT_OUT))
+        [result] = merge_bill(ws, bill(2, "copy.pdf"), extract_bill(FLIGHT_OUT))
+        assert result.kind == "already_saved" and len(ws.transport) == 2
+
     def test_duplicate_invoice(self):
         ws = workspace()
         merge_bill(ws, bill(1, "out.pdf"), extract_bill(FLIGHT_OUT))
-        merge_bill(ws, bill(2, "copy.pdf"), extract_bill(FLIGHT_OUT))
+        other_day = {**FLIGHT_OUT, "tourDetails": {**FLIGHT_OUT["tourDetails"], "startDate": "2026-08-21"}}
+        merge_bill(ws, bill(2, "copy.pdf"), extract_bill(other_day))
         assert "DUPLICATE_INVOICE" in codes(ws)
 
 

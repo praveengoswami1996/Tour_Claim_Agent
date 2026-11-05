@@ -70,6 +70,11 @@ def _time(value: Any) -> str | None:
     return None
 
 
+def normalise_time(value: Any) -> str | None:
+    """A time as HH:mm, or None. Used for saved rows too, so a bill and its saved row compare equal."""
+    return _time(value)
+
+
 def _tax(value: Any) -> TaxStructure | None:
     text = (_text(value) or "").upper().replace(" ", "_").replace("/", "_")
     if text == "IGST":
