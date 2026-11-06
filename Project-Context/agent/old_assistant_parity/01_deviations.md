@@ -134,22 +134,31 @@ makes the claim contradict itself (dates outside the tour, arriving before depar
 | # | Old behaviour | Now | Why |
 |---|---|---|---|
 | O13 | The narrator never gave amounts ("Never calculate or estimate DA, totals, fares or any amount… say they are entered on the claim form") | A "talk" message gets a `BILLS` section in the narrate message (after PAGE; new `narrate(bills=…)`, `NarratorView.bills`) with figures worked out in code (`claimchat/billing.py`), and `BILLS_RULE` after the narrator prompt: answer amount questions only from BILLS, exactly as written; nothing added, subtracted or estimated; a figure not in BILLS "could not be determined". The last line of the typed message says the same when BILLS is given | owner requirement |
-| O14 | — | A per-conversation bill ledger (`state.billLedger`), recorded when a read is gone through (`autoSaveRead`, `formRead`) and when an upload had only exact copies: file, documentId, hash, tour, journey/stay, route or hotel and place, date, invoice number, amount (`claimedAmountWithTax`, else none), duplicate of | owner requirement |
+| O14 | — | A per-conversation bill ledger (`state.billLedger`), recorded when a read is gone through (`autoSaveRead`, `formRead`) and when an upload had only exact copies or files turned away: file, documentId, hash, tour, journey/stay, route or hotel and place, date, invoice number, amount (`claimedAmountWithTax`, else none), duplicate of, counted (only a bill that went into a claim) | owner requirement |
 | O15 | — | On each "talk" turn every outside-jurisdiction draft is read (the page's drafts list, then GetRaiseClaimDraft for each, once per turn) and its totals worked out as the claim form does (see below) | owner requirement |
 
-**What BILLS holds** (amounts in ₹, en-IN as the old texts: `₹12,34,567.50`):
-- every bill read in this conversation, upload by upload, with its amount or "amount could not be determined";
-- the latest upload's total and the whole conversation's total, each bill counted once, with how many bills had no
-  amount and how many duplicates were left out; the highest and the lowest bill; the totals per tour of the bills read;
-- every saved draft: transportation, accommodation, DA, leave deduction (when there is one), total with DA, total
-  without DA; and all drafts together.
+**What BILLS holds** (amounts in ₹, en-IN as the old texts: `₹12,34,567.50`), in two parts kept apart (the model is
+told never to mix them and to say which one it gives):
+- **BILL AMOUNTS** (each bill's total with tax, as read from the bills uploaded in this chat): every file read or
+  turned away in this conversation, upload by upload, with its amount or "amount could not be determined"; a file that
+  did not go into a claim, or a duplicate, is listed with "not counted" and why; the latest upload's total and the
+  whole conversation's total (each bill counted once), with how many bills had no amount, how many duplicates and how
+  many files that did not go into a claim were left out; the highest and the lowest bill; the totals per tour;
+- **DRAFT TOTALS** (as the claim form works them out from the saved draft): every saved draft's transportation,
+  accommodation, DA, leave deduction (when there is one), total with DA, total without DA; and all drafts together. A
+  draft without DA rows: "DA could not be determined (no DA is saved in the draft: it is worked out when the draft is
+  opened in the claim form)".
 
 **Rules (billing.py):**
 - A bill's amount is the OCR's `claimedAmountWithTax` (a journey's `amountDetails`, a stay's `invoice`), never a sum of
   line items or taxes. Missing, not a number, 0 or less: "could not be determined". A ticket with several journeys is
   one bill (its first usable `claimedAmountWithTax`). Text amounts may carry "₹" and "," separators.
-- One bill per file for its journeys; one per invoice number for its stays. A file read with nothing found (or that
-  could not be read) is listed without an amount and not counted.
+- One bill per file for its journeys; one per invoice number for its stays.
+- Only a bill that went into a claim (fate `saved`: added to a draft, or to the form's claim) is counted. A bill that
+  matches no tour, whose tour can't be told, with a problem on the bill, that could not be saved, a file that could not
+  be read or had nothing in it, and a file turned away at upload are listed with why and left out of every bill total
+  (latest upload, the whole chat, highest / lowest, per tour). Saved journeys keep the old claimed amount
+  (`totalClaimedAmount` / `claimedAmount`), so a draft's transportation total can differ from the bill amounts.
 - Duplicates (counted once, the copies listed as "duplicate of …"): an exact copy skipped at upload (same bytes); a
   different scan of a journey or stay already read in this chat (same journey key / stay key) or already in the claim
   (`alreadySaved`); the same invoice number with the same amount.

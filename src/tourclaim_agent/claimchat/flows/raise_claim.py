@@ -1004,7 +1004,7 @@ class RaiseClaimChat(ChatFlow):
             fates[name] = {"kind": "duplicate"}
         for r in skipped["rejected"]:
             fates[r["name"]] = {"kind": "rejected", "reason": r["reason"]}
-        record_skipped(self.ledger, skipped["duplicate"], self.s.get("skippedHashes") or {})
+        record_skipped(self.ledger, skipped["duplicate"], self.s.get("skippedHashes") or {}, skipped["rejected"])
         self.say(upload_sorted_text(list(fates), fates), "error" if skipped["rejected"] else None)
 
     # ── the bills read in this conversation, and their amounts (owner requirement C, claimchat/billing.py) ──

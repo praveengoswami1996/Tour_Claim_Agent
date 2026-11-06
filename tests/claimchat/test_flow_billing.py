@@ -28,21 +28,30 @@ from tourclaim_agent.claimchat.flows.raise_claim import BILLS_RULE, UNDERSTAND_R
 from tourclaim_agent.main import create_app
 
 HEAD = (
-    "All amounts are in ₹. A bill's amount is its total with tax as read from the bill; each bill is counted once "
-    "(duplicates are left out)."
+    "All amounts are in ₹. There are two kinds of figures: never mix them, and always say which one you give. BILL "
+    "AMOUNTS are each bill's total with tax as read from the bills uploaded in this chat (each bill counted once: "
+    "duplicates and bills that did not go into a claim are left out of every total). DRAFT TOTALS are what the claim "
+    "form works out from each saved draft."
+)
+BILLS_HEAD = (
+    "BILL AMOUNTS (each bill's total with tax, as read from the bills uploaded in this chat), by upload (oldest first):"
 )
 DRAFTS_HEAD = (
-    "SAVED DRAFTS (each claim's totals as the claim form works them out from the saved draft: Total Transportation "
-    "Amount + Total Accommodation Amount + Total DA Amount, less the DA of leave days marked DA deductable; DA as "
-    "saved in the draft):"
+    "DRAFT TOTALS (not bill amounts: each saved draft's totals as the claim form works them out from the saved draft: "
+    "Total Transportation Amount + Total Accommodation Amount + Total DA Amount, less the DA of leave days marked DA "
+    "deductable; DA as saved in the draft):"
+)
+NO_DA = (
+    "DA could not be determined (no DA is saved in the draft: it is worked out when the draft is opened in the claim "
+    "form)"
 )
 MUMBAI = "tour #503 Noida → Mumbai (20 Aug 2026 – 22 Aug 2026)"
 CHENNAI = "tour #504 Noida → Chennai (01 Sep 2026 – 03 Sep 2026)"
 # the draft the chat saves for tour 503 from the bills below (the claim form's amounts: the flights' ClaimedAmount is
 # the OCR's totalClaimedAmount / claimedAmount, which these bills do not give; the hotel's is claimedAmountWithTax)
 MUMBAI_DRAFT = (
-    f"• {MUMBAI}: transportation ₹0.00, accommodation ₹10,080.00, DA could not be determined (no DA saved in the "
-    "draft), total with DA could not be determined, total without DA ₹10,080.00."
+    f"• {MUMBAI}: transportation ₹0.00, accommodation ₹10,080.00, {NO_DA}, total with DA could not be determined, "
+    "total without DA ₹10,080.00."
 )
 CHENNAI_DRAFT = (
     f"• {CHENNAI}: transportation ₹2,000.50, accommodation ₹5,000.00, DA ₹1,700.00, leave deduction ₹700.00, total "
@@ -100,14 +109,24 @@ def read_three_then_duplicates(chat, backend: FakeBackend) -> None:
     finish(backend, "back.pdf", FLIGHT_BACK)  # no claimedAmountWithTax: its amount can't be determined
     finish(backend, "hotel.pdf", with_claimed(HOTEL, 10080))
     chat.poll()
-    # the next upload: an exact copy of out.pdf (skipped at upload) and another scan of the same flight
-    chat.attach(("out-copy.pdf", PDF + b"1"), ("scan.pdf", PDF + b"3"))
+    # the next upload: an exact copy of out.pdf (skipped at upload), another scan of the same flight, a flight that
+    # matches no approved tour and a file turned away: none of them goes into a claim, none is counted
+    chat.attach(
+        ("out-copy.pdf", PDF + b"1"),
+        ("scan.pdf", PDF + b"3"),
+        ("december.pdf", PDF + b"d"),
+        ("notes.docx", b"word", "application/octet-stream"),
+    )
     finish(backend, "scan.pdf", with_claimed(renamed(FLIGHT_OUT, "scan.pdf"), 6810.5))
+    december = with_claimed(renamed(FLIGHT_OUT, "december.pdf"), 99999)
+    december["tourDetails"].update(startDate="2026-12-01", endDate="2026-12-01")
+    december["tourDetails"]["amountDetails"]["invoiceNo"] = "AI-999"
+    finish(backend, "december.pdf", december)
     chat.poll()
 
 
 BILLS_READ = (
-    "BILLS READ IN THIS CHAT, by upload (oldest first):\n"
+    f"{BILLS_HEAD}\n"
     "Upload 1:\n"
     f"• out.pdf (journey Delhi (Noida) → Mumbai, 20 Aug 2026, invoice AI-123, {MUMBAI}): ₹6,810.50\n"
     f"• back.pdf (journey Mumbai → Delhi (Noida), 22 Aug 2026, invoice AI-456, {MUMBAI}): amount could not be "
@@ -115,15 +134,21 @@ BILLS_READ = (
     f"• hotel.pdf (stay Harbour Inn in Mumbai, 20 Aug 2026, invoice HI-77, {MUMBAI}): ₹10,080.00\n"
     "Upload 2:\n"
     "• scan.pdf: duplicate of out.pdf, not counted\n"
+    "• december.pdf (journey Delhi (Noida) → Mumbai, 01 Dec 2026, invoice AI-999): ₹99,999.00; not counted: it did "
+    "not go into a claim (it matches none of the approved tours)\n"
     "• out-copy.pdf: duplicate of out.pdf, not counted\n"
-    "LATEST UPLOAD (upload 2): 0 unique bills; no bill to count; 2 duplicates left out.\n"
+    "• notes.docx: no amount; not counted: it did not go into a claim (the file was turned away at upload: I can only "
+    "read PDFs and photos or scans (JPG, PNG), not this kind of file.)\n"
+    "LATEST UPLOAD (upload 2): 0 unique bills; no bill to count; 2 duplicates left out; 2 files left out because "
+    "they did not go into a claim.\n"
     "ALL BILLS READ IN THIS CHAT: 3 unique bills; total ₹16,890.50 (of the 2 with an amount); 1 bill whose amount "
-    "could not be determined, not included; 2 duplicates left out.\n"
+    "could not be determined, not included; 2 duplicates left out; 2 files left out because they did not go into a "
+    "claim.\n"
     "HIGHEST BILL: ₹10,080.00 (hotel.pdf).\n"
     "LOWEST BILL: ₹6,810.50 (out.pdf).\n"
-    "BY TOUR (bills read in this chat only, not the whole draft):\n"
+    "BILL AMOUNTS BY TOUR (bills read in this chat only, not the draft totals):\n"
     f"• {MUMBAI}: 3 unique bills; total ₹16,890.50 (of the 2 with an amount); 1 bill whose amount could not be "
-    "determined, not included; 1 duplicate left out."
+    "determined, not included; 1 duplicate left out; 0 files left out because they did not go into a claim."
 )
 
 
@@ -155,7 +180,7 @@ class TestOnThePage:
         )
         # the report itself stays the old ✅ New / ↩ Duplicate one, with nothing about missing information
         report = backend.gateway_calls[-3]["message"]
-        assert report.startswith("NOTES:\n1. Your bill has been read:\n\n**↩ Duplicate (2)**\n• **scan.pdf**: ")
+        assert report.startswith("NOTES:\n1. Your 2 bills have been read:\n\n**↩ Duplicate (2)**\n• **scan.pdf**: ")
         assert "\n• **out-copy.pdf**: same file as one already uploaded, skipped" in report
         no_gaps(backend)
 
@@ -184,13 +209,13 @@ class TestOnThePage:
         chat.say("What is the total claim amount of all my drafts?", {"action": "talk"})
         typed = chat.sent[-1]["message"]
         mumbai = (
-            f"• {MUMBAI}: transportation ₹4,500.25, accommodation ₹0.00, DA could not be determined (no DA saved in "
-            "the draft), total with DA could not be determined, total without DA ₹4,500.25."
+            f"• {MUMBAI}: transportation ₹4,500.25, accommodation ₹0.00, {NO_DA}, total with DA could not be "
+            "determined, total without DA ₹4,500.25."
         )
         assert bills_of(typed) == "\n".join(
             [
                 HEAD,
-                "BILLS READ IN THIS CHAT: none yet.",
+                "BILL AMOUNTS: no bills read in this chat yet.",
                 DRAFTS_HEAD,
                 CHENNAI_DRAFT,
                 mumbai,
@@ -234,20 +259,23 @@ class TestInTheForm:
         assert bills_of(narrate["message"]) == "\n".join(
             [
                 HEAD,
-                "BILLS READ IN THIS CHAT, by upload (oldest first):",
+                BILLS_HEAD,
                 "Upload 1:",
                 f"• out.pdf (journey Delhi (Noida) → Mumbai, 20 Aug 2026, invoice AI-123, {MUMBAI}): ₹6,810.50",
                 f"• hotel.pdf (stay Harbour Inn in Mumbai, 20 Aug 2026, invoice HI-77, {MUMBAI}): amount could not "
                 "be determined",
                 "LATEST UPLOAD (upload 1): 2 unique bills; total ₹6,810.50 (of the 1 with an amount); 1 bill whose "
-                "amount could not be determined, not included; 0 duplicates left out.",
+                "amount could not be determined, not included; 0 duplicates left out; 0 files left out because they "
+                "did not go into a claim.",
                 "ALL BILLS READ IN THIS CHAT: 2 unique bills; total ₹6,810.50 (of the 1 with an amount); 1 bill whose "
-                "amount could not be determined, not included; 0 duplicates left out.",
+                "amount could not be determined, not included; 0 duplicates left out; 0 files left out because they "
+                "did not go into a claim.",
                 "HIGHEST BILL: ₹6,810.50 (out.pdf).",
                 "LOWEST BILL: ₹6,810.50 (out.pdf).",
-                "BY TOUR (bills read in this chat only, not the whole draft):",
+                "BILL AMOUNTS BY TOUR (bills read in this chat only, not the draft totals):",
                 f"• {MUMBAI}: 2 unique bills; total ₹6,810.50 (of the 1 with an amount); 1 bill whose amount could not "
-                "be determined, not included; 0 duplicates left out.",
+                "be determined, not included; 0 duplicates left out; 0 files left out because they did not go into a "
+                "claim.",
                 DRAFTS_HEAD,
                 CHENNAI_DRAFT,
                 "ALL 1 DRAFT TOGETHER: transportation ₹2,000.50, accommodation ₹5,000.00, DA ₹1,700.00, total with "
@@ -271,5 +299,5 @@ class TestInTheForm:
         assert "• hotel-2.pdf: duplicate of hotel.pdf, not counted" in bills
         assert (
             "LATEST UPLOAD (upload 1): 1 unique bill; total ₹10,080.00 (of the 1 with an amount); 1 duplicate left "
-            "out." in bills
+            "out; 0 files left out because they did not go into a claim." in bills
         )

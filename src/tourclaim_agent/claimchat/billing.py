@@ -11,7 +11,12 @@ typed turn's narrate message). Nothing is estimated: an amount that is not on th
 - **The ledger** (`new_ledger`, `record_read`, `record_skipped`) lists every bill read in this conversation, upload by
   upload (one upload = one read report). A bill that is a copy of one already counted is kept with `duplicateOf` and
   never counted again: an exact copy skipped at upload (same bytes), a different scan of the same journey or stay
-  (same journey / stay, or already in the saved claim), or the same invoice number with the same amount.
+  (same journey / stay, or already in the saved claim), or the same invoice number with the same amount. Only a bill
+  that went into a claim (added to a draft, or to the form's claim) is counted: a bill matching no tour, not added
+  because of a problem on it, not saved, unreadable, with nothing found in it, or turned away at upload is listed with
+  why, and left out of every bill total (owner, 2026-11-06).
+- **Two kinds of figures** are kept apart in BILLS: BILL AMOUNTS (with tax, as read from the bills) and DRAFT TOTALS
+  (as the claim form works them out from the saved draft).
 - **A draft's totals** (`draft_amounts`) are worked out from the saved draft (GetRaiseClaimDraft) exactly as the claim
   form works them out once it has loaded that draft (Tour_React src/pages/RaiseClaim):
   * Total Transportation Amount: TransportationSection.tsx:541-543, the sum of every row's
@@ -48,13 +53,17 @@ CENT: Final = Decimal("0.01")
 _NUMBER: Final = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 _MONTHS: Final = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-# what happened to a file in the read report, in plain words (only the kinds that mean it was not added)
+# why a file did not go into a claim, in plain words (it is then not counted in any bill total)
 _STATUS: Final = {
-    "noTour": "not added: it matches none of the approved tours",
-    "unsure": "not added: which tour it is for could not be told",
-    "problem": "not added: a problem on the bill itself",
-    "saveFailed": "not saved yet",
+    "noTour": "it matches none of the approved tours",
+    "unsure": "which tour it is for could not be told",
+    "problem": "a problem on the bill itself",
+    "saveFailed": "it could not be saved into a draft yet",
+    "unreadable": "it could not be read",
+    "nothingFound": "no journey or stay was found in it",
+    "rejected": "the file was turned away at upload",
 }
+_NOT_IN_CLAIM: Final = "it did not go into a claim"
 
 
 # ─── numbers ──────────────────────────────────────────────────────────────────
@@ -166,7 +175,11 @@ def _add(ledger: dict[str, Any], entry: dict[str, Any]) -> None:
     in_claim = entry.pop("inClaim", False)
     if entry.get("duplicateOf") is None and entry["kind"] is not None:
         original = next(
-            (b for b in ledger["bills"] if b.get("duplicateOf") is None and _same_bill(entry, b)),
+            (
+                b
+                for b in ledger["bills"]
+                if b.get("duplicateOf") is None and b.get("counted", True) and _same_bill(entry, b)
+            ),
             None,
         )
         if original is not None:
@@ -182,13 +195,24 @@ def _copy_of(ledger: dict[str, Any], hash_: str | None) -> str:
     return original["file"] if original else "a bill uploaded earlier"
 
 
-def record_skipped(ledger: dict[str, Any], duplicates: list[str], hashes: dict[str, Any]) -> None:
-    """An upload with nothing to read: its exact copies (same bytes as a bill already uploaded) were skipped."""
-    if not duplicates:
+def record_skipped(
+    ledger: dict[str, Any],
+    duplicates: list[str],
+    hashes: dict[str, Any],
+    rejected: list[dict[str, Any]] = (),  # type: ignore[assignment]
+) -> None:
+    """An upload with nothing to read: its exact copies (same bytes as a bill already uploaded) were skipped, and the
+    files turned away (`rejected`: {name, reason}) are listed, never counted."""
+    if not duplicates and not rejected:
         return
     upload = _next_upload(ledger)
     for name in duplicates:
         _add(ledger, _skipped_entry(ledger, upload, name, hashes.get(name)))
+    for r in rejected:
+        entry = _skipped_entry(ledger, upload, r["name"], None)
+        entry["duplicateOf"] = None
+        entry["status"] = f"{_STATUS['rejected']}: {js_str(r.get('reason'))}"
+        _add(ledger, entry)
 
 
 def _skipped_entry(ledger: dict[str, Any], upload: int, name: str, hash_: Any) -> dict[str, Any]:
@@ -207,6 +231,7 @@ def _skipped_entry(ledger: dict[str, Any], upload: int, name: str, hash_: Any) -
         "tour": "",
         "keys": [],
         "status": "",
+        "counted": False,
         "duplicateOf": _copy_of(ledger, hash_),
     }
 
@@ -249,8 +274,6 @@ def record_read(
         fate = fates.get(name) or {}
         kind_of_fate = jget(fate, "kind")
         bill = by_name.get(name)
-        if kind_of_fate in ("rejected",):
-            continue  # not a bill: the file was turned away (not a PDF or photo, empty)
         if kind_of_fate == "duplicate" and bill is None:
             _add(ledger, _skipped_entry(ledger, upload, name, skipped_hashes.get(name)))
             continue
@@ -262,7 +285,15 @@ def record_read(
             "hash": bill.get("hash") if bill else None,
             "tourId": jget(tour, "tourId") if tour is not None else None,
             "tour": tour_name(tour) if tour is not None else "",
-            "status": _STATUS.get(kind_of_fate, ""),
+            # only a bill that went into a claim (added to a draft, or to the form's claim) is counted
+            "counted": kind_of_fate == "saved",
+            "status": ""
+            if kind_of_fate in ("saved", "alreadySaved")
+            else (
+                f"{_STATUS['rejected']}: {js_str(jget(fate, 'reason'))}"
+                if kind_of_fate == "rejected" and js_truthy(jget(fate, "reason"))
+                else _STATUS.get(kind_of_fate, _NOT_IN_CLAIM)
+            ),
             "duplicateOf": None,
             "inClaim": kind_of_fate == "alreadySaved",
         }
@@ -341,7 +372,8 @@ def record_read(
                     "invoiceKey": "",
                     "amount": None,
                     "keys": [],
-                    "status": "could not be read" if kind_of_fate == "unreadable" else "no journey or stay found",
+                    "counted": False,
+                    "status": base["status"] or _STATUS["nothingFound"],
                 },
             )
 
@@ -354,8 +386,13 @@ def _amount(entry: dict[str, Any]) -> Decimal | None:
 
 
 def _counted(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The unique bills (no duplicates), with or without an amount."""
-    return [e for e in entries if e.get("duplicateOf") is None and e.get("kind") is not None]
+    """The unique bills that went into a claim (no duplicates), with or without an amount."""
+    return [e for e in entries if e.get("duplicateOf") is None and e.get("kind") is not None and e.get("counted", True)]
+
+
+def _left_out(e: dict[str, Any]) -> bool:
+    """A file that did not go into a claim (and is not a duplicate): listed, never counted."""
+    return e.get("duplicateOf") is None and (e.get("kind") is None or not e.get("counted", True))
 
 
 def _total_line(label: str, entries: list[dict[str, Any]]) -> str:
@@ -363,7 +400,7 @@ def _total_line(label: str, entries: list[dict[str, Any]]) -> str:
     known = [e for e in unique if _amount(e) is not None]
     unknown = len(unique) - len(known)
     duplicates = len([e for e in entries if e.get("duplicateOf") is not None])
-    unread = len([e for e in entries if e.get("kind") is None and e.get("duplicateOf") is None])
+    left_out = len([e for e in entries if _left_out(e)])
     total = sum((_amount(e) or Decimal(0) for e in known), Decimal(0))
     parts = [f"{label}: {len(unique)} unique bill{'' if len(unique) == 1 else 's'}"]
     if known:
@@ -375,8 +412,10 @@ def _total_line(label: str, entries: list[dict[str, Any]]) -> str:
     if unknown:
         parts.append(f"{unknown} bill{'' if unknown == 1 else 's'} whose amount could not be determined, not included")
     parts.append(f"{duplicates} duplicate{'' if duplicates == 1 else 's'} left out")
-    if unread:
-        parts.append(f"{unread} file{'' if unread == 1 else 's'} with no bill read from it")
+    parts.append(
+        f"{left_out} file{'' if left_out == 1 else 's'} left out because {'it' if left_out == 1 else 'they'} did not "
+        "go into a claim"
+    )
     return "; ".join(parts) + "."
 
 
@@ -384,7 +423,7 @@ def _bill_line(e: dict[str, Any]) -> str:
     if e.get("duplicateOf") is not None:
         return f"• {e['file']}: duplicate of {e['duplicateOf']}, not counted"
     if e.get("kind") is None:
-        return f"• {e['file']}: {e['status']}, no amount"
+        return f"• {e['file']}: no amount; not counted: it did not go into a claim ({e['status']})"
     what = f"{'journey' if e['kind'] == 'journey' else 'stay'} {e['what']}"
     details = [what]
     if e.get("date"):
@@ -393,25 +432,33 @@ def _bill_line(e: dict[str, Any]) -> str:
         details.append(f"invoice {e['invoiceNo']}")
     if e.get("tour"):
         details.append(e["tour"])
-    if e.get("status"):
-        details.append(e["status"])
     amount = _amount(e)
     shown = money(amount) if amount is not None else "amount could not be determined"
+    if _left_out(e):
+        shown += f"; not counted: it did not go into a claim ({e['status'] or _NOT_IN_CLAIM})"
     return f"• {e['file']} ({', '.join(details)}): {shown}"
+
+
+HEAD: Final = (
+    "All amounts are in ₹. There are two kinds of figures: never mix them, and always say which one you give. BILL "
+    "AMOUNTS are each bill's total with tax as read from the bills uploaded in this chat (each bill counted once: "
+    "duplicates and bills that did not go into a claim are left out of every total). DRAFT TOTALS are what the claim "
+    "form works out from each saved draft."
+)
 
 
 def bills_section(ledger: dict[str, Any] | None, drafts: list[dict[str, Any]] | None) -> str:
     """The BILLS section of a typed turn: the bills read in this conversation and the drafts' totals."""
     ledger = ledger or new_ledger()
     entries: list[dict[str, Any]] = list(ledger.get("bills") or [])
-    lines = [
-        "All amounts are in ₹. A bill's amount is its total with tax as read from the bill; each bill is counted "
-        "once (duplicates are left out).",
-    ]
+    lines = [HEAD]
     if not entries:
-        lines.append("BILLS READ IN THIS CHAT: none yet.")
+        lines.append("BILL AMOUNTS: no bills read in this chat yet.")
     else:
-        lines.append("BILLS READ IN THIS CHAT, by upload (oldest first):")
+        lines.append(
+            "BILL AMOUNTS (each bill's total with tax, as read from the bills uploaded in this chat), by upload "
+            "(oldest first):"
+        )
         uploads = sorted({e["upload"] for e in entries})
         for n in uploads:
             lines.append(f"Upload {n}:")
@@ -430,7 +477,7 @@ def bills_section(ledger: dict[str, Any] | None, drafts: list[dict[str, Any]] | 
             if e.get("tourId") is not None and all(t[0] != e["tourId"] for t in tours):
                 tours.append((e["tourId"], e["tour"]))
         if tours:
-            lines.append("BY TOUR (bills read in this chat only, not the whole draft):")
+            lines.append("BILL AMOUNTS BY TOUR (bills read in this chat only, not the draft totals):")
             for tour_id, name in tours:
                 lines.append(_total_line(f"• {name}", [e for e in entries if e.get("tourId") == tour_id]))
     lines.append(drafts_section(drafts))
@@ -496,13 +543,13 @@ def _or_unknown(value: Decimal | None) -> str:
 def drafts_section(drafts: list[dict[str, Any]] | None) -> str:
     """`drafts`: [{tourId, label, amounts (draft_amounts) or None when the draft could not be read}]."""
     if drafts is None:
-        return "SAVED DRAFTS: could not be read just now."
+        return "DRAFT TOTALS: the saved drafts could not be read just now."
     if not drafts:
-        return "SAVED DRAFTS: none."
+        return "DRAFT TOTALS: no saved drafts."
     lines = [
-        "SAVED DRAFTS (each claim's totals as the claim form works them out from the saved draft: Total "
-        "Transportation Amount + Total Accommodation Amount + Total DA Amount, less the DA of leave days marked DA "
-        "deductable; DA as saved in the draft):"
+        "DRAFT TOTALS (not bill amounts: each saved draft's totals as the claim form works them out from the saved "
+        "draft: Total Transportation Amount + Total Accommodation Amount + Total DA Amount, less the DA of leave days "
+        "marked DA deductable; DA as saved in the draft):"
     ]
     read = []
     for d in drafts:
@@ -514,7 +561,12 @@ def drafts_section(drafts: list[dict[str, Any]] | None) -> str:
         parts = [
             f"transportation {money(a['transportation'])}",  # type: ignore[arg-type]
             f"accommodation {money(a['accommodation'])}",  # type: ignore[arg-type]
-            f"DA {_or_unknown(a['da'])}" + ("" if a["da"] is not None else " (no DA saved in the draft)"),
+            f"DA {_or_unknown(a['da'])}"
+            + (
+                ""
+                if a["da"] is not None
+                else " (no DA is saved in the draft: it is worked out when the draft is opened in the claim form)"
+            ),
         ]
         if a["leave"] is None or a["leave"] > 0:
             parts.append(f"leave deduction {_or_unknown(a['leave'])}")
