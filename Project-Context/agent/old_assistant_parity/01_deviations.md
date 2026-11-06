@@ -100,3 +100,68 @@ branches of `afterRead` / `noMoreFiles`, and the "Choose a tour myself" chip. Th
 path; one that was would run "talk", as `runs[spec.name] ?? runs.talk`. The quirks of Spec A §8 are kept (e.g.
 `resetAskedRef` stays set after a confirmed start over; the no-drafts greeting has no "Hello"; the saved-claim link
 chip's label is the URL; "I'll fill the rest on the form" opens the form at once).
+
+## Owner requirements 2026-11-06
+
+New requirements on top of exact parity, for the Raise Claim chat on the Raise Claim page (`raise_page`) and inside
+the claim form (`raise_form`). The Within Jurisdiction chat (`flows/within.py`) is unchanged. Every row's reason is
+**owner requirement**. CC = ClaimChatbot.tsx line.
+
+### A. Nothing is said about missing information
+
+| # | Old behaviour | Now | Why |
+|---|---|---|---|
+| O1 | After the tour was chosen (and after every edit, undo, save offer) `advance` asked one missing detail at a time (`findMissingFields`, "(N more after this one)", the "skip" hint; CC:662-685) | No question: the claim is read out as it is (the old confirm read-out) and the step is `confirm` | owner requirement |
+| O2 | "Did you stay anywhere overnight?…" / "Were you on leave on any day of the tour?…" (CC:686-698) | Not asked | owner requirement |
+| O3 | Before the read-out, the review questions one at a time (`runReview`, `reviewClaim` without `LIST_PAGE_SKIPS`, CC:699-702, 1810-1899): uncovered days, nights without a stay, cabs/taxis, tickets, odd places… | No review on the page (none in the form either: it was only reached from the page's `advance`) | owner requirement |
+| O4 | The read-out added "👀 Worth a check" (`findRelationIssues`, e.g. "Is a ticket missing in between?") and "⚠️ The form will flag these" (`findFormOnlyIssues` + `findClaimIssues`: amounts not read, city class…) | The read-out lists the claim only (tone success) | owner requirement |
+| O5 | The read-out showed a journey without a travel mode as "· mode not set" | That segment is left out | owner requirement |
+| O6 | "Fill the form" with missing details or form issues went to the `validate` step: "Quick heads-up, the form will flag these…" (`describeMissing`), chips "Sort them out here" / "Open the form anyway" (CC:1927-1985) | Straight to the hand-off (`doFill`); the `validate` step, its chips and `choose_here` are gone | owner requirement |
+| O7 | The hand-off note: "Ask the employee to review each section, attach anything missing (amounts and bill files go on the form), then submit." | "…review each section (amounts and bill files go on the form), then submit." | owner requirement |
+| O8 | "What's left?" chip and the `show_progress` action (`buildProgress` / `progressText`; in the form the review list with `missingInShort`) | Removed: the chip is not shown, the action is not offered to the model (a message asking it is "talk"); `requestFill` in the form (unreachable) no longer goes on to it | owner requirement |
+| O9 | The saved-drafts data given to the model (PAGE, `SAVED DRAFTS IN DETAIL`) carried each draft's `missing` sentence ("Missing Return journey ticket, …" / "Nothing is missing.") | `missing` (and `stillMissing`) are left out | owner requirement |
+| O10 | `savedClaimText` ended with "Still no bills for 11 Sep." or "Every day of the tour is now covered." | That last line is left out (`saved_claim_text(..., gaps=False)`): keeping only the "covered" line would tell the gap by its absence | owner requirement |
+| O11 | The chat state given to understand had `hasMissing`, `pendingQuestion`, `review`; CONTEXT had "The open question fills …" | Always false / none / left out | owner requirement |
+| O12 | Prompts: the old strings only | prompts.json is unchanged; added in code (`flows/raise_claim.py`): `NO_GAPS_RULE` after the narrator prompt (typed turns) and as a last rule of the `brief` prompt (other replies: `ChatFlow.brief_prompt()`, new `narrate(brief_prompt=…)`); `UNDERSTAND_RULES` after the understand prompt (amount questions are "talk", with the owner's examples; questions about what is missing are "talk"); one line in understand's CONTEXT | owner requirement |
+
+Kept, as they are not about what a claim lacks: the ✅ New / ↩ Duplicate / 🚫 Not relevant report (unchanged, both
+pages), the in-form "Do you have more tickets or bills to upload for this claim?", "⚠️ Please check:" after an edit that
+makes the claim contradict itself (dates outside the tour, arriving before departing), the air-travel note, the
+"server no longer has <file>" note, and FORM_TALK_NOTE / FORM_READY_REPLY in the form (already the owner's rule).
+
+### C. Billing questions
+
+| # | Old behaviour | Now | Why |
+|---|---|---|---|
+| O13 | The narrator never gave amounts ("Never calculate or estimate DA, totals, fares or any amount… say they are entered on the claim form") | A "talk" message gets a `BILLS` section in the narrate message (after PAGE; new `narrate(bills=…)`, `NarratorView.bills`) with figures worked out in code (`claimchat/billing.py`), and `BILLS_RULE` after the narrator prompt: answer amount questions only from BILLS, exactly as written; nothing added, subtracted or estimated; a figure not in BILLS "could not be determined". The last line of the typed message says the same when BILLS is given | owner requirement |
+| O14 | — | A per-conversation bill ledger (`state.billLedger`), recorded when a read is gone through (`autoSaveRead`, `formRead`) and when an upload had only exact copies: file, documentId, hash, tour, journey/stay, route or hotel and place, date, invoice number, amount (`claimedAmountWithTax`, else none), duplicate of | owner requirement |
+| O15 | — | On each "talk" turn every outside-jurisdiction draft is read (the page's drafts list, then GetRaiseClaimDraft for each, once per turn) and its totals worked out as the claim form does (see below) | owner requirement |
+
+**What BILLS holds** (amounts in ₹, en-IN as the old texts: `₹12,34,567.50`):
+- every bill read in this conversation, upload by upload, with its amount or "amount could not be determined";
+- the latest upload's total and the whole conversation's total, each bill counted once, with how many bills had no
+  amount and how many duplicates were left out; the highest and the lowest bill; the totals per tour of the bills read;
+- every saved draft: transportation, accommodation, DA, leave deduction (when there is one), total with DA, total
+  without DA; and all drafts together.
+
+**Rules (billing.py):**
+- A bill's amount is the OCR's `claimedAmountWithTax` (a journey's `amountDetails`, a stay's `invoice`), never a sum of
+  line items or taxes. Missing, not a number, 0 or less: "could not be determined". A ticket with several journeys is
+  one bill (its first usable `claimedAmountWithTax`). Text amounts may carry "₹" and "," separators.
+- One bill per file for its journeys; one per invoice number for its stays. A file read with nothing found (or that
+  could not be read) is listed without an amount and not counted.
+- Duplicates (counted once, the copies listed as "duplicate of …"): an exact copy skipped at upload (same bytes); a
+  different scan of a journey or stay already read in this chat (same journey key / stay key) or already in the claim
+  (`alreadySaved`); the same invoice number with the same amount.
+- A draft's totals, as the claim form works them out once it has loaded the draft (Tour_React
+  `src/pages/RaiseClaim`): transportation = Σ `parseFloat(String(ClaimedAmount ?? 0)) || 0` (ApproverPage.tsx:1098,
+  TransportationSection.tsx:541-543); accommodation = the same over the stays, 0 without stays (ApproverPage.tsx:1162,
+  1195; AccommodationSection.tsx:2284-2290); DA = Σ `Number(Amount || 0)` of the `DailyAllowanceDto` rows with
+  `IsApplicable === true` (ApproverPage.tsx:1198-1220, 543, 1800; DailyAllowanceSection.tsx:429); leave deduction = for
+  each leave row with a date and `DADeductable`, the DA of the DA rows whose date is within it (LeaveSection.tsx:133-158,
+  208-217, 236-241; ApproverPage.tsx:1225-1238); total = `toFixed(2)` of transportation + accommodation + DA − leave
+  (ApproverPage.tsx:543-553). Without DA: transportation + accommodation (the leave deduction is DA taken back, so it
+  goes with the DA). A draft without DA rows has its DA worked out by the form itself: the agent never works out DA, so
+  DA, the leave deduction and the total with DA are "could not be determined". Each subtotal is rounded as
+  `Number(x.toFixed(2))`. The leave dates are not clamped to the tour's dates (the form's clamp needs the tour plan;
+  DA rows lie within the tour anyway).

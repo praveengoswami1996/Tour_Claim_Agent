@@ -197,9 +197,16 @@ async def narrate(
     already_shown: list[str] | None = None,
     claim: str | None = None,
     page: str | None = None,
+    bills: str | None = None,
+    brief_prompt: str | None = None,
     on_text: OnText | None = None,
 ) -> ChatReply:
-    """aiAssistant.ts › narrate. Raises LlmError when the gateway fails (the caller shows SYSTEM_NOTICE)."""
+    """aiAssistant.ts › narrate. Raises LlmError when the gateway fails (the caller shows SYSTEM_NOTICE).
+
+    Not in the old code (owner requirement 2026-11-06, used by the Raise Claim chats only): `bills`, the BILLS section
+    of a typed turn (amounts worked out in code), and `brief_prompt`, the prompt for replies without a typed message
+    (default: the old `brief` prompt).
+    """
 
     def cleaned(raw: str) -> Any:
         return on_text(clean_reply(raw)) if on_text is not None else None
@@ -219,7 +226,7 @@ async def narrate(
         result = await llm.chat_stream(
             message,
             conversation_id=None,
-            system_prompt=prompts()["brief"],
+            system_prompt=brief_prompt or prompts()["brief"],
             max_tokens=400,
             temperature=0.2,
             on_text=cleaned,
@@ -237,12 +244,22 @@ async def narrate(
         parts.append(f"CLAIM:\n{claim}")
     if page:
         parts.append(f"PAGE:\n{page}")
+    if bills:
+        # owner requirement 2026-11-06 (the Raise Claim chats): amounts and totals worked out in code (billing.py)
+        parts.append(f"BILLS:\n{bills}")
     # The last thing the model reads: what this reply is for.
     parts.append(
         "Now reply to EMPLOYEE SAID only, briefly (at most three short sentences, or a short list if they asked for "
         "one). Use CLAIM and PAGE only for what they asked; never read out or sum up the claim otherwise. A short "
         '"ok", "yes", "thanks" or greeting gets one short sentence (plus the OPEN QUESTION, if any) and nothing about '
         "the claim."
+        + (
+            " A question about an amount or a total is answered only with the figures written in BILLS, exactly as "
+            "written; never add, subtract or estimate a number yourself, and if the figure asked for is not in BILLS, "
+            "say it could not be determined."
+            if bills
+            else ""
+        )
     )
     result = await llm.chat_stream(
         "\n\n".join(parts),

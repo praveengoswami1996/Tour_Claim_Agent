@@ -20,6 +20,12 @@ Dead code of the TSX that no live path reaches (Spec A §8) is left out: the bul
 announceGaps and the steps gaps / submit (startSubmit, doSubmit), the outside branch of afterRead and noMoreFiles,
 and the "Choose a tour myself" chip (noMatch is never set). Their actions are never offered by outsideActions on a
 live path; if one were, it would run "talk", as the TSX's `runs[spec.name] ?? runs.talk`.
+
+Owner requirements 2026-11-06 (01_deviations.md, "Owner requirements 2026-11-06") change the old behaviour in both
+modes: nothing is ever said about what a claim lacks (the missing-detail, stay, leave and review questions, the
+validate step, "What's left?", the gap lines of the texts and the drafts' "missing" data are gone, and a rule is added
+to the prompts), and billing questions are answered from amounts worked out in code (claimchat/billing.py, the BILLS
+section of a typed turn).
 """
 
 from __future__ import annotations
@@ -42,12 +48,10 @@ from tourclaim_agent.claimchat.ai.assistant_actions import (
 )
 from tourclaim_agent.claimchat.bill_outcome import upload_verdict
 from tourclaim_agent.claimchat.bill_summary import read_header, read_summary_text, stronger_fate, upload_sorted_text
+from tourclaim_agent.claimchat.billing import bills_section, draft_amounts, new_ledger, record_read, record_skipped
 from tourclaim_agent.claimchat.claim_assistant import (
     DA_RULES,
     apply_edits,
-    describe_missing,
-    find_form_only_issues,
-    find_missing_fields,
     initial_claim_state,
     is_empty_accommodation,
     is_empty_leave,
@@ -63,14 +67,7 @@ from tourclaim_agent.claimchat.claim_assistant import (
 )
 from tourclaim_agent.claimchat.claim_link import claim_link
 from tourclaim_agent.claimchat.claim_payload import js_json_stringify
-from tourclaim_agent.claimchat.claim_progress import (
-    build_progress,
-    covered_text,
-    find_claim_issues,
-    find_relation_issues,
-    progress_text,
-    stay_bill_problem,
-)
+from tourclaim_agent.claimchat.claim_progress import covered_text, find_claim_issues, stay_bill_problem
 from tourclaim_agent.claimchat.file_hash import hash_file
 from tourclaim_agent.claimchat.intents import MAX_FILES_PER_READ, MAX_MESSAGE_CHARS, check_files, clean_message
 from tourclaim_agent.claimchat.js_compat import (
@@ -122,32 +119,55 @@ from tourclaim_agent.claimchat.saved_claim import (
     saved_draft_summary,
 )
 from tourclaim_agent.claimchat.tour_matcher import match_tours, tour_window, triage_rows
-from tourclaim_agent.claimchat.tour_review import (
-    missing_in_short,
-    next_review_step,
-    review_blocked_note,
-    review_claim,
-    review_done_note,
-    review_question_note,
-    review_settled_note,
-    settle,
-)
 
 if TYPE_CHECKING:
     from tourclaim_agent.claimchat.runtime.turn import IncomingFile
 
 log = logging.getLogger(__name__)
 
+# ─── owner requirements 2026-11-06 (01_deviations.md), added to the old prompts (prompts.json stays as it was) ──
+
+# A: the chat never points out what a claim lacks
+NO_GAPS_RULE: Final = (
+    "OWNER RULE (it overrides every rule and note above that says otherwise): never identify, highlight, suggest or "
+    "mention missing information, missing or mandatory details or fields, missing tickets, bills or documents, days "
+    "or journeys without bills, or any other gap in a claim or a draft; give no warning that a claim is incomplete, "
+    "and ask no question about what is missing or what else to upload or add. The chat does not collect missing "
+    "details. If the employee asks what is missing or whether a claim is complete, say only that the claim form "
+    "checks the claim when they submit it."
+)
+# C: amounts come only from BILLS (worked out in code: claimchat/billing.py)
+BILLS_RULE: Final = (
+    "AMOUNTS (this overrides the rules above about amounts and totals): when the employee asks about the amount of a "
+    "bill, the total of the uploaded bills, the highest or lowest bill, or the total of a tour, a draft or all drafts "
+    "(with or without DA), answer only from BILLS, with the figures exactly as written there (in ₹). Never add, "
+    "subtract, multiply, round or estimate a number yourself, and never use an amount that is not in BILLS. If the "
+    "figure asked for is not in BILLS, or BILLS says it could not be determined, say it could not be determined. "
+    "When BILLS says duplicates were left out, say how many. When BILLS is not given, say you can't see the amounts "
+    "right now."
+)
+UNDERSTAND_RULES: Final = (
+    "\n\nOWNER RULES (they override anything above):\n"
+    "- A question about amounts, totals or money (the amount of each bill, the total of the uploaded bills, the "
+    'highest or lowest bill, the total of a tour, a draft or all drafts, with or without DA) is "talk", never "edit" '
+    'and never "show_claim". Examples: "What is the total of these uploaded bills?" -> talk; "What is the amount of '
+    'each bill?" -> talk; "Which bill has the highest amount?" -> talk; "What is the total claim amount of all my '
+    'drafts?" -> talk; "total for my Mumbai tour without DA" -> talk.\n'
+    "- The chat never asks about missing details, mandatory fields or missing documents: a question about what is "
+    'missing or left is "talk".'
+)
+
 # CC:204-205
-NARRATOR_PROMPT: Final = prompts()["narrate_outside"]
-UNDERSTAND_PROMPT: Final = prompts()["understand_outside"]
+NARRATOR_PROMPT: Final = f"{prompts()['narrate_outside']}\n\n{NO_GAPS_RULE}\n\n{BILLS_RULE}"
+BRIEF_PROMPT: Final = f"{prompts()['brief']}\n- {NO_GAPS_RULE}"
+UNDERSTAND_PROMPT: Final = prompts()["understand_outside"] + UNDERSTAND_RULES
+# actions of the old chat that are no longer offered (owner requirement A: no "what is left?")
+REMOVED_ACTIONS: Final = frozenset(("show_progress",))
 
 # CC:127: steps where a question is waiting for its answer: bills read meanwhile are gone through once it is answered
 WAIT_STEPS: Final = ("confirmTour", "pickTour", "bulkDrafts", "splitTours", "submit")
 # CC:2345
 TOUR_STEPS: Final = ("uploadChoice", "confirmTour", "pickTour", "splitTours", "bulkDrafts")
-# CC:1821: on the Raise Claim page the details, stay and leave questions come first
-LIST_PAGE_SKIPS: Final = frozenset(("missingField", "amountMissing", "formOnly", "askLeave", "noJourneys"))
 
 SAVE_DRAFT_LABEL: Final = "Save as draft"
 OPEN_FILE_PICKER: Final = {"type": "open_file_picker"}
@@ -196,6 +216,15 @@ def place_name(v: Any) -> str:
     return js_trim(js_str(js_or(v, "?")).split(",")[0])
 
 
+def bill_tour_name(t: Any) -> str:
+    """A tour as BILLS names it (owner requirement C): 'tour #503 Noida → Mumbai (20 Aug 2026 – 22 Aug 2026)'."""
+    rng = short_range(t)
+    return (
+        f"tour #{js_str(jget(t, 'tourId'))} {place_name(jget(t, 'source'))} → {place_name(jget(t, 'destination'))}"
+        f"{f' ({rng})' if rng else ''}"
+    )
+
+
 def has_claim_rows(s: dict[str, Any]) -> bool:
     """CC:188-189"""
     return any(not is_empty_transport(r) for r in s["transportationRows"]) or (
@@ -230,10 +259,6 @@ def claim_key(s: dict[str, Any]) -> str:
     return js_json_stringify(replace(value))
 
 
-def slot_key(m: dict[str, Any]) -> str:
-    return f"{js_str(m['section'])}:{js_str(m['row'])}:{js_str(m['slot'])}"
-
-
 def row_file_names(rows: list[Any]) -> list[str]:
     """CC:154-155"""
     return [f["name"] for r in rows for f in [*(jget(r, "uploadedFiles") or []), *(jget(r, "billFiles") or [])]]
@@ -244,10 +269,10 @@ def count_of(n: int, word: str) -> str:
 
 
 def review_text(s: dict[str, Any]) -> str:
-    """CC:610-611"""
+    """CC:610-611. Owner requirement A: a journey without a travel mode is listed without the old "mode not set"."""
     return (
-        f"Your claim:\n\nJourneys\n{summarize_journeys(s)}\n\nStays\n{summarize_stays(s)}"
-        f"\n\nLeave\n{summarize_leave(s)}"
+        f"Your claim:\n\nJourneys\n{summarize_journeys(s).replace(' · mode not set', '')}\n\nStays\n"
+        f"{summarize_stays(s)}\n\nLeave\n{summarize_leave(s)}"
     )
 
 
@@ -342,6 +367,11 @@ class RaiseClaimChat(ChatFlow):
             "formStarted": False,
             "formTours": None,
             "lastDraftsKey": "",
+            # owner requirement C: the bills read in this conversation with their amounts, and the BILLS of a typed
+            # turn
+            "billLedger": new_ledger(),
+            "billsText": None,
+            "skippedHashes": {},
         }
 
     # ── shortcuts ──
@@ -478,6 +508,9 @@ class RaiseClaimChat(ChatFlow):
     def system_prompt(self) -> str:
         return NARRATOR_PROMPT
 
+    def brief_prompt(self) -> str | None:
+        return BRIEF_PROMPT
+
     async def on_open(self) -> None:
         await self._ensure_loaded()
         # CC:440-446: opening the chat asks for the bill list again
@@ -561,10 +594,6 @@ class RaiseClaimChat(ChatFlow):
         await self.commit(stored, True)
         return self.claim
 
-    def open_missing(self, s: dict[str, Any]) -> list[dict[str, Any]]:
-        skipped = set(self.s["skipped"])
-        return [m for m in find_missing_fields(s) if slot_key(m) not in skipped]
-
     # ── yes / no (CC:331-362) ──
     def clear_ask_yn(self) -> None:
         self.s["askYN"] = None
@@ -626,7 +655,10 @@ class RaiseClaimChat(ChatFlow):
         details = list(self.s["draftDetails"].values())
         if not details:
             return ""
-        listed = js_json_stringify([draft_for_model(d) for d in details])
+        # owner requirement A: what a draft lacks ("missing", "stillMissing") is never given to the model
+        listed = js_json_stringify(
+            [{k: v for k, v in draft_for_model(d).items() if k not in ("missing", "stillMissing")} for d in details]
+        )
         return f"SAVED DRAFTS IN DETAIL (what each saved claim holds):\n{listed}"
 
     # ── kept reports (CC:452-481) ──
@@ -950,63 +982,15 @@ class RaiseClaimChat(ChatFlow):
             self.ask_tour(s)
             return
         # inside the claim form the chat never asks about what the claim is missing: it only reads bills into it
-        if self.in_form:
-            st["pending"] = None
-            return
-        missing = self.open_missing(s)
-        if missing:
-            st["step"] = "details"
-            st["pending"] = missing[0]
-            more = f"\n\n({len(missing) - 1} more after this one)" if len(missing) > 1 else ""
-            hint = (
-                ""
-                if st["hinted"]
-                else '\n\n(If you would rather fill something on the form yourself, just say "skip".)'
-            )
-            st["hinted"] = True
-            self.say(missing[0]["question"] + more + hint)
-            return
         st["pending"] = None
-        has_stay = js_truthy(s["includeAccommodation"]) and any(
-            js_truthy(jget(r, "location")) or js_truthy(jget(r, "checkInDate")) for r in s["accommodationRows"]
-        )
-        if not st["asked"]["stay"] and not has_stay:
-            st["asked"]["stay"] = True
-            st["step"] = "stay"
-            self.say(
-                'Did you stay anywhere overnight? You can upload the hotel bill or just tell me, like "guest house in '
-                'Ahmedabad, 5th to 8th". Say "no" if you didn\'t.'
-            )
+        if self.in_form:
             return
-        if not st["asked"]["leave"] and not js_truthy(s["includeLeave"]):
-            st["asked"]["leave"] = True
-            st["step"] = "leave"
-            self.say('Were you on leave on any day of the tour? For example, "leave on 7th". Say "no" if not.')
-            return
-        # before the read-out: the route, cabs and taxis, nights and bills (asked one at a time, like inside the form)
-        if not st["reviewPassed"]:
-            await self.run_review("check")
-            return
-        st["reviewPassed"] = False
+        # owner requirement A: no questions about missing details, stays or leave, no review questions and no
+        # warnings: the claim is read out as it is (the old read-out without "Worth a check" / "The form will flag")
         st["step"] = "confirm"
-        heads = [*find_form_only_issues(s), *find_claim_issues(s, picked["rules"])]
-        notes = find_relation_issues(s)
         text = review_text(s)
-        if notes:
-            text += "\n\n👀 Worth a check:\n" + "\n".join(f"• {n}" for n in notes)
-        if heads:
-            text += (
-                "\n\n⚠️ The form will flag these:\n"
-                + "\n".join(f"• {h}" for h in heads)
-                + "\nYou can sort them out with me or on the form."
-            )
-        text += (
-            "\n\nIf anything looks off, tell me and I'll fix it. Amounts and bill files are added in the form itself. "
-            'When you\'re happy, just say "submit".'
-            if self.in_form
-            else "\n\nIf anything looks off, tell me and I'll fix it. When you're happy, say \"fill the form\"."
-        )
-        self.say(text, None if heads else "success")
+        text += "\n\nIf anything looks off, tell me and I'll fix it. When you're happy, say \"fill the form\"."
+        self.say(text, "success")
 
     # ── bills skipped at upload (CC:722-736) ──
     def take_skipped(self) -> dict[str, list[Any]]:
@@ -1020,7 +1004,65 @@ class RaiseClaimChat(ChatFlow):
             fates[name] = {"kind": "duplicate"}
         for r in skipped["rejected"]:
             fates[r["name"]] = {"kind": "rejected", "reason": r["reason"]}
+        record_skipped(self.ledger, skipped["duplicate"], self.s.get("skippedHashes") or {})
         self.say(upload_sorted_text(list(fates), fates), "error" if skipped["rejected"] else None)
+
+    # ── the bills read in this conversation, and their amounts (owner requirement C, claimchat/billing.py) ──
+    @property
+    def ledger(self) -> dict[str, Any]:
+        return self.s.setdefault("billLedger", new_ledger())
+
+    def record_bills(
+        self,
+        result: dict[str, Any],
+        bills: list[dict[str, Any]],
+        rows: list[dict[str, Any]],
+        names: list[str],
+        fates: dict[str, Any],
+        tour_of: dict[str, Any],
+    ) -> None:
+        try:
+            record_read(
+                self.ledger,
+                result=result,
+                bills=bills,
+                rows=rows,
+                names=names,
+                fates=fates,
+                tour_of=tour_of.get,
+                tour_name=bill_tour_name,
+                skipped_hashes=self.s.get("skippedHashes") or {},
+            )
+        except Exception:  # noqa: BLE001 - the amounts are extra: a bill that cannot be recorded never stops a read
+            log.warning("could not record the bills read for their amounts", exc_info=True)
+
+    def _draft_label(self, tour_id: Any) -> str:
+        row = self.rt.page.tour_row(tour_id)
+        return bill_tour_name(row) if row is not None else f"tour #{js_str(tour_id)}"
+
+    async def prepare_bills(self) -> None:
+        """The BILLS of this typed turn: the bills read in this chat and every saved draft's totals (read once per
+        turn: the page's drafts list, then GetRaiseClaimDraft for each)."""
+        drafts: list[dict[str, Any]] | None
+        try:
+            ids = list(dict.fromkeys(self.rt.page.draft_tour_ids))
+            cache: dict[str, Any] = self.__dict__.setdefault("_drafts_this_turn", {})
+            todo = [i for i in ids if js_str(i) not in cache]
+            loaded = await asyncio.gather(*(self.rt.page.load_draft(i) for i in todo))
+            for tour_id, raw in zip(todo, loaded, strict=True):
+                cache[js_str(tour_id)] = raw
+            drafts = [
+                {
+                    "tourId": i,
+                    "label": self._draft_label(i),
+                    "amounts": draft_amounts(cache[js_str(i)]) if cache[js_str(i)] else None,
+                }
+                for i in ids
+            ]
+        except Exception:  # noqa: BLE001 - the drafts' totals are then "could not be read"
+            log.warning("could not read the drafts for their totals", exc_info=True)
+            drafts = None
+        self.s["billsText"] = bills_section(self.ledger, drafts)
 
     # ── a tour's saved draft (CC:738-803) ──
     async def load_saved(self, tour_id: Any, fresh: bool = False) -> dict[str, Any] | None:
@@ -1134,6 +1176,7 @@ class RaiseClaimChat(ChatFlow):
         for f, h in zip(accepted, hashes, strict=True):
             if upload_verdict(h, known, in_upload)["kind"] == "duplicate":
                 s["pendingSkip"]["duplicate"] = [*s["pendingSkip"]["duplicate"], f.name]
+                s.setdefault("skippedHashes", {})[f.name] = h  # which bill it copies (billing)
                 continue
             if h:
                 in_upload.add(h)
@@ -1241,8 +1284,11 @@ class RaiseClaimChat(ChatFlow):
                 )
             st["saveOffered"] = False
             if saved and vs_saved:
+                # owner requirement A: nothing about the days without bills
                 self.tell(
-                    saved_claim_text({"claim": tour_label(row), "saved": saved, **vs_saved, "merged": nxt, "tour": row})
+                    saved_claim_text(
+                        {"claim": tour_label(row), "saved": saved, **vs_saved, "merged": nxt, "tour": row}, gaps=False
+                    )
                 )
                 if rows_count(vs_saved["added"]) > 0:
                     self.offer_save(row)
@@ -1581,6 +1627,7 @@ class RaiseClaimChat(ChatFlow):
         self, result: dict[str, Any], bills: list[dict[str, Any]], read: dict[str, Any] | None
     ) -> None:
         st = self.s
+        ocr_result = result  # (`result` is the save's outcome further down)
         mapped = map_ocr_to_rows(result, bills)
         all_rows = [*mapped["transportationRows"], *mapped["accommodationRows"]]
         skipped = self.take_skipped()
@@ -1702,6 +1749,14 @@ class RaiseClaimChat(ChatFlow):
         # results that did not get into a draft are given back, to be gone through the next time the assistant opens
         await self.give_back_files_of(not_saved)
         self._remember_read(bills, fates)
+        self.record_bills(
+            ocr_result,
+            bills,
+            all_rows,
+            names,
+            fates,
+            {n: g["tour"] for g in groups for n in row_file_names([*g["journeys"], *g["stays"]])},
+        )
 
         offered: list[Any] = []
         for t in [*saved_now, *with_draft]:
@@ -1808,6 +1863,14 @@ class RaiseClaimChat(ChatFlow):
             if saved:
                 await self.settle_files_of(nxt)
         self._remember_read(bills, fates)
+        self.record_bills(
+            result,
+            bills,
+            all_rows,
+            names,
+            fates,
+            {n: row for n in row_file_names([*journeys, *stays])} if row else {},
+        )
 
         self.clear_ask_yn()
         st["pending"] = None
@@ -1882,46 +1945,7 @@ class RaiseClaimChat(ChatFlow):
         self.s["pending"] = None
         self.say("Okay. Everything I read is in your claim.")
 
-    # ── what is done, what is left (CC:1729-1751) ──
-    @continuation
-    async def show_progress(self) -> None:
-        st = self.s
-        s = await self.sync_from_form()
-        if self.in_form and st["picked"]:
-            items = await self.review_items(s)
-            acknowledged, deferred = set(st["acknowledged"]), set(st["deferred"])
-            if not items:
-                note = f"Nothing is left: the tour is complete and the form's checks pass. {review_text(s)}"
-            else:
-                lines = "\n".join(
-                    f"• {'[must fix] ' if i.get('blocking') else ''}{i['fact']}"
-                    + (
-                        " (confirmed as it is)"
-                        if i["id"] in acknowledged
-                        else (" (to fix on the form)" if i["id"] in deferred else "")
-                    )
-                    for i in items
-                )
-                note = (
-                    f"What is left before the claim can be submitted ({len(items)}). In one sentence, to be said word "
-                    f'for word: "{missing_in_short(items) or "Some details need checking."}"\n{lines}'
-                )
-            self.tell(note, "error" if any(i.get("blocking") for i in items) else ("success" if not items else None))
-            return
-        has_stay = js_truthy(s["includeAccommodation"]) and any(
-            js_truthy(jget(r, "location")) or js_truthy(jget(r, "checkInDate")) for r in s["accommodationRows"]
-        )
-        progress: dict[str, Any] = {
-            "state": s,
-            "tour": st["picked"]["row"] if st["picked"] else None,
-            "staysAnswered": has_stay or st["asked"]["stay"],
-            "leaveAnswered": js_truthy(s["includeLeave"]) or st["asked"]["leave"],
-            "doneUploading": st["doneUploading"],
-        }
-        if st["picked"]:
-            progress["rules"] = st["picked"]["rules"]
-        report = build_progress(progress)  # type: ignore[arg-type]
-        self.tell(progress_text(report), "success" if report["ready"] and not report["heads"] else None)
+    # ── "What's left?" (CC:1729-1751): removed (owner requirement A, nothing is said about what a claim lacks) ──
 
     # ── handing the claim to the form (CC:1793-1808) ──
     @continuation
@@ -1937,9 +1961,10 @@ class RaiseClaimChat(ChatFlow):
             # the bills handed to the form are the form's now (it saves them to the draft)
             if opened:
                 await self.settle_files_of(handed)
+                # owner requirement A: the old note also said "attach anything missing"
                 self.tell(
-                    "The claim form was filled with the claim and opened. Ask the employee to review each section, "
-                    "attach anything missing (amounts and bill files go on the form), then submit.",
+                    "The claim form was filled with the claim and opened. Ask the employee to review each section "
+                    "(amounts and bill files go on the form), then submit.",
                     "success",
                 )
             else:
@@ -1949,97 +1974,15 @@ class RaiseClaimChat(ChatFlow):
         finally:
             self.set_busy(None)
 
-    # ── review (CC:1810-1899) ──
-    async def review_items(self, s: dict[str, Any]) -> list[dict[str, Any]]:
-        st = self.s
-        form_problems: list[Any] = []
-        if self.in_form:
-            try:
-                form_problems = list(await self.rt.bridge.call("check") or [])
-            except BridgeError:
-                form_problems = []
-        inp: dict[str, Any] = {
-            "state": s,
-            "tour": st["picked"]["row"] if st["picked"] else None,
-            "formProblems": form_problems,
-            "leaveAnswered": "askLeave" in st["acknowledged"]
-            or (st["asked"]["leave"] and not js_truthy(s["includeLeave"])),
-        }
-        if st["picked"]:
-            inp["rules"] = st["picked"]["rules"]
-        items = review_claim(inp)  # type: ignore[arg-type]
-        return items if self.in_form else [i for i in items if i["kind"] not in LIST_PAGE_SKIPS]
-
-    async def run_review(self, mode: str) -> None:
-        st = self.s
-        st["reviewMode"] = mode
-        s = await self.sync_from_form()
-        items = await self.review_items(s)
-        acknowledged, deferred = set(st["acknowledged"]), set(st["deferred"])
-        nxt = next_review_step(items, acknowledged, deferred)  # type: ignore[arg-type]
-        asked = st["reviewItem"]
-        if nxt["type"] == "ask":
-            item, open_ = nxt["item"], nxt["open"]
-            st["reviewActive"] = True
-            st["reviewItem"] = item
-            st["pending"] = None
-            st["step"] = "review"
-            self.tell(
-                review_question_note(item, open_, bool(asked) and asked["id"] == item["id"]),
-                "error" if item.get("blocking") else None,
-                {"kind": item["kind"], "mustFix": item.get("blocking")},
-            )
-            return
-        st["reviewItem"] = None
-        st["reviewActive"] = False
-        # what the employee chose to fix on the form, and the form still rejects
-        if nxt["type"] == "blocked":
-            st["step"] = "confirm"
-            self.tell(review_blocked_note(nxt["blocking"]), "error")
-            return
-        if not self.in_form:
-            st["reviewPassed"] = True
-            await self.advance(s)
-            return
-        if mode == "submit":
-            st["step"] = "submit"
-            st["pending"] = None
-            self.tell(review_done_note(review_text(s), True), "success")
-            return
-        st["step"] = "confirm"
-        self.tell(review_done_note(review_text(s), False), "success")
-
-    @continuation
-    async def settle_review(self, how: str) -> None:
-        """The employee settled the review question: confirmed it, will fix it on the form, or removed the entry."""
-        st = self.s
-        item = st["reviewItem"]
-        if not item:
-            await self.run_review(st["reviewMode"])
-            return
-        if how == "upload":
-            self.tell(review_settled_note(item, "upload"))
-            return
-        if how == "remove" and item.get("section") and item.get("row") and item.get("section") != "leave":
-            await self.finish_edits(
-                self.claim, [{"section": item["section"], "row": item["row"], "field": "remove", "value": "yes"}], ""
-            )
-            return
-        if how in ("confirm", "later"):
-            acknowledged, deferred = set(st["acknowledged"]), set(st["deferred"])
-            settle(item, how, acknowledged, deferred)  # type: ignore[arg-type]
-            st["acknowledged"] = [*st["acknowledged"], *(i for i in acknowledged if i not in st["acknowledged"])]
-            st["deferred"] = [*st["deferred"], *(i for i in deferred if i not in st["deferred"])]
-            self.tell(review_settled_note(item, how))  # type: ignore[arg-type]
-        await self.run_review(st["reviewMode"])
+    # ── review (CC:1810-1899): removed (owner requirement A, no questions about what a claim lacks) ──
 
     # ── "fill the form" (CC:1927-1985) ──
     @continuation
     async def request_fill(self) -> None:
         st = self.s
         if self.in_form:
+            # unreachable (the action and the chip are not offered in the form); the old one went on to "what's left"
             self.say("Your form is already up to date as we go, so there's nothing more to fill.")
-            await self.show_progress()
             return
         s = self.claim
         if not has_claim_rows(s):
@@ -2051,55 +1994,14 @@ class RaiseClaimChat(ChatFlow):
             self.say("Which tour is this for?")
             self.ask_tour(s)
             return
-        missing = find_missing_fields(s)
-        form_only = [*find_form_only_issues(s), *find_claim_issues(s, st["picked"]["rules"])]
-        if not missing and not form_only:
-            await self.do_fill()
-            return
-        st["step"] = "validate"
-        st["pending"] = None
-        lines = "\n".join(
-            x for x in [describe_missing(s, missing) if missing else "", *(f"• {i}" for i in form_only)] if x
-        )
-        self.tell(
-            f"Quick heads-up, the form will flag these when you submit:\n{lines}\n\n"
-            + (
-                "Would you like to sort them out here with me, or open the form as it is?"
-                if missing
-                else "Some of these can only be fixed on the form itself. Shall I open it now?"
-            )
-        )
-
-    @continuation
-    async def choose_here(self) -> None:
-        st = self.s
-        if not find_missing_fields(self.claim):
-            await self.do_fill()
-            return
-        st["skipped"] = []
-        st["hinted"] = False
-        self.say("Understood, let's sort them out.")
-        await self.advance(self.claim)
-
-    @continuation
-    async def choose_form(self) -> None:
+        # owner requirement A: no list of what the form will flag (the old "validate" step): straight to the hand-off
         await self.do_fill()
-
-    @continuation
-    async def skip_pending(self) -> None:
-        pending = self.s["pending"]
-        if not pending:
-            return
-        if slot_key(pending) not in self.s["skipped"]:
-            self.s["skipped"].append(slot_key(pending))
-        self.say("Understood, left for the form.")
-        await self.advance(self.claim)
 
     # ── where the chat is, for the AI model (CC:1995-2027) ──
     def chat_state(self) -> dict[str, Any]:
         st = self.s
         ask = st["askYN"]
-        item = st["reviewItem"]
+        # owner requirement A: no missing details, no question for one, no review question
         return {
             "step": st["step"],
             "inForm": self.in_form,
@@ -2112,21 +2014,11 @@ class RaiseClaimChat(ChatFlow):
             "hasTour": bool(st["picked"]),
             "hasBulk": False,
             "hasSplit": False,
-            "hasMissing": len(find_missing_fields(self.claim)) > 0,
-            "pendingQuestion": st["pending"]["question"] if st["pending"] else None,
+            "hasMissing": False,
+            "pendingQuestion": None,
             "canUndo": bool(st["undo"]),
             "hasSavedTours": len(st["savedTours"]) > 0,
-            "review": {
-                "question": item["question"],
-                "blocking": item.get("blocking"),
-                "resolutions": item.get("resolutions"),
-                "yes": item.get("yes"),
-                "no": item.get("no"),
-                "newJourney": item.get("newJourney"),
-                "oddPlace": item.get("kind") == "oddPlace",
-            }
-            if item
-            else None,
+            "review": None,
         }
 
     def open_question(self) -> str | None:
@@ -2146,7 +2038,6 @@ class RaiseClaimChat(ChatFlow):
         tour = st["picked"]["row"] if st["picked"] else None
         step = st["step"]
         offered = (st["ranked"] if st["ranked"] else self.tours) if step in ("confirmTour", "pickTour") else []
-        pend = st["pending"] if step == "details" else None
         tour_text = f"#{js_str(jget(tour, 'tourId'))} {tour_label(tour)}" if tour else "not chosen yet"
         parts = [
             f"Where the chat is: {'inside the claim form' if self.in_form else 'the Raise Claim page'}. Tour: "
@@ -2157,10 +2048,10 @@ class RaiseClaimChat(ChatFlow):
             "SAVED CLAIMS:\n" + "\n".join(f"#{js_str(jget(t, 'tourId'))}: {tour_label(t)}" for t in st["savedTours"])
             if st["savedTours"]
             else "",
-            f"The open question fills {js_str(pend['section'])} row {js_str(pend['row'])}: {js_str(pend['label'])}."
-            if pend
-            else "",
             f"CURRENT CLAIM:\n{snapshot(s, st['picked']['tour'] if st['picked'] else None)}",
+            # owner requirements 2026-11-06
+            "The chat never asks about or points out missing details, mandatory fields or missing documents. "
+            'Questions about bill amounts or totals (of bills, tours or drafts, with or without DA) are "talk".',
         ]
         return "\n".join(p for p in parts if p)
 
@@ -2197,8 +2088,9 @@ class RaiseClaimChat(ChatFlow):
     async def interpret(self, text: str, recent: list[dict[str, Any]] | None = None) -> None:
         st = self.s
         self.rt.narrator.heard(text)
+        st["billsText"] = None
         current = await self.sync_from_form()
-        specs = outside_actions(self.chat_state())  # type: ignore[arg-type]
+        specs = [a for a in outside_actions(self.chat_state()) if a.name not in REMOVED_ACTIONS]  # type: ignore[arg-type]
         # what the actions were built with (the render's values, CC:2030-2133)
         captured = {
             "yn": st["askYN"],
@@ -2249,6 +2141,7 @@ class RaiseClaimChat(ChatFlow):
         st = self.s
         if name == "talk":
             self.tell(FORM_TALK_NOTE if self.in_form else TALK_NOTE)
+            await self.prepare_bills()  # owner requirement C: a question may be about amounts
         elif name == "ask_if_ready":
             self.say(FORM_READY_REPLY)
         elif name in ("yes", "no"):
@@ -2276,26 +2169,9 @@ class RaiseClaimChat(ChatFlow):
             self.has_more_files()
         elif name == "no_more_files":
             self.no_more_files()
-        elif name == "fill_here":
-            await self.choose_here()
-        elif name == "fill_on_form":
-            await self.choose_form()
-        elif name == "open_form_anyway":
-            await self.do_fill()
-        elif name == "yes_have_it":
-            await self.settle_review("upload")
-        elif name in ("yes_keep_it", "no_keep_as_is"):
-            await self.settle_review("confirm")
-        elif name == "no_remove_it":
-            await self.settle_review("remove")
-        elif name == "fixed_it":
-            await self.settle_review("fixed")
-        elif name == "fix_on_form_later":
-            await self.settle_review("later")
-        elif name in ("no_stay", "no_leave"):
-            await self.advance(self.claim)
-        elif name == "skip_question":
-            await self.skip_pending()
+        # owner requirement A: the actions of the missing-detail, stay / leave, review and validate questions
+        # (fill_here, fill_on_form, open_form_anyway, yes_have_it, ..., skip_question) and show_progress are gone:
+        # never offered, they would run "talk" like the old dead actions
         elif name == "edit":
             valid = read_claim_edits(edits)
             if not valid:
@@ -2304,17 +2180,7 @@ class RaiseClaimChat(ChatFlow):
                     "again, more plainly."
                 )
                 return
-            # answering "how did you get to the airport?": the ride is a new journey, so the journeys already in the
-            # claim are not written over
-            item = st["reviewItem"] if st["step"] == "review" else None
-            locked = (
-                [i + 1 for i, r in enumerate(self.claim["transportationRows"]) if not is_empty_transport(r)]
-                if item and item.get("newJourney")
-                else None
-            )
-            await self.finish_edits(self.claim, valid, "", locked, pending=c["pending"])
-        elif name == "show_progress":
-            await self.show_progress()
+            await self.finish_edits(self.claim, valid, "", None, pending=c["pending"])
         elif name == "show_claim":
             self.tell(f"The employee asked to see the claim. {review_text(await self.sync_from_form())}")
         elif name == "explain_da":
@@ -2347,10 +2213,7 @@ class RaiseClaimChat(ChatFlow):
         elif name == "undo":
             await self.undo_last(c["undo"])
         elif name == "fill_form":
-            if c["step"] == "validate":
-                await self.do_fill()
-            else:
-                await self.request_fill()
+            await self.request_fill()
         elif name == "open_saved_claim":
             t = self._tour_by_id(args, c["savedTours"])
             if t is None:
@@ -2370,6 +2233,7 @@ class RaiseClaimChat(ChatFlow):
         else:
             # an action of the dead machinery (never offered on a live path): `runs[spec.name] ?? runs.talk`
             self.tell(FORM_TALK_NOTE if self.in_form else TALK_NOTE)
+            await self.prepare_bills()
 
     # ── start over / undo / edits (CC:2211-2257) ──
     async def reset_claim(self) -> None:
@@ -2483,73 +2347,17 @@ class RaiseClaimChat(ChatFlow):
             return Chip(label, run, kind=kind, primary=primary, disabled=disabled)
 
         out: list[Chip] = []
-        # reviewChips
-        item = st["reviewItem"]
-        if step == "review" and item:
-            resolutions = item.get("resolutions") or []
-            if "upload" in resolutions:
-                out.append(chip("📎 Upload it", kind="upload", primary=True))
-            if not item.get("blocking") and "confirm" in resolutions:
-                label = (
-                    "Yes, it's right"
-                    if item.get("yes") == "confirm"
-                    else ("No leave" if item.get("kind") == "askLeave" else "I don't have it / not needed")
-                )
-                out.append(chip(label, cont("settle_review", how="confirm"), primary="upload" not in resolutions))
-            if item.get("no") == "remove":
-                out.append(chip("No, remove it", cont("settle_review", how="remove")))
-            if item.get("blocking") or "form" in resolutions:
-                out.append(
-                    chip(
-                        "Done, I've fixed it",
-                        cont("settle_review", how="fixed"),
-                        primary="upload" not in resolutions and "chat" not in resolutions,
-                    )
-                )
-                out.append(chip("I'll fix it on the form", cont("settle_review", how="later")))
+        # reviewChips, and the stay / leave / missing-detail question chips: removed (owner requirement A)
         # Read again
         if bills and not st["busy"]:
             out.append(chip("Read again", cont("upload_bills"), primary=True))
         # askChips
-        pending = st["pending"]
         if ask:
             out.append(chip(ask["yesLabel"], cont("ask_answer", which="yes"), primary=True))
             out.append(chip(ask["noLabel"], cont("ask_answer", which="no")))
         elif st["resetAsk"]:
             out.append(chip("Yes, start over", cont("send_words", text="yes")))
             out.append(chip("No, keep my claim", cont("send_words", text="no"), primary=True))
-        elif step == "stay":
-            out.append(chip("📎 Yes, upload hotel bill", kind="upload", primary=True))
-            out.append(
-                chip(
-                    "✍️ Yes, I'll type it",
-                    cont("say_text", text='Tell me the city and dates, like "guest house in Ahmedabad, 5th to 8th".'),
-                )
-            )
-            out.append(chip("No stay", cont("send_words", text="no")))
-        elif step == "leave":
-            out.append(
-                chip(
-                    "Yes, I was on leave",
-                    cont("say_text", text='Which day or days? For example, "leave on 7th" or "leave 7th to 9th".'),
-                    primary=True,
-                )
-            )
-            out.append(chip("No leave", cont("send_words", text="no")))
-        elif step == "details" and pending:
-            if pending.get("slot") == "mode":
-                modes = [
-                    *([] if picked and picked["rules"].get("allowAir") is False else [("✈️ Air", "air")]),
-                    ("🚆 Rail", "rail"),
-                    ("🚌 Bus / taxi", "bus or taxi"),
-                    ("🚗 Personal vehicle", "personal vehicle"),
-                    ("🏢 Official vehicle", "official vehicle"),
-                ]
-                for i, (label, value) in enumerate(modes):
-                    out.append(chip(label, cont("send_words", text=value), primary=i == 0))
-            out.append(chip("Skip this one", cont("skip_pending")))
-            if not in_form:
-                out.append(chip("I'll fill the rest on the form", cont("choose_form")))
         # tourChips
         if step == "confirmTour" and st["suggested"]:
             out.append(chip("Yes, that's right", cont("choose_tour", row=st["suggested"]), primary=True))
@@ -2580,12 +2388,7 @@ class RaiseClaimChat(ChatFlow):
                 out.append(Chip(link, None, kind="link", href=link))
             out.append(chip("📎 Upload other bills", kind="upload"))
             out.append(chip("Not now", cont("saved_not_now")))
-        # choiceChips (validate)
-        if step == "validate":
-            missing = len(find_missing_fields(claim)) > 0
-            if missing:
-                out.append(chip("Sort them out here", cont("choose_here"), primary=True))
-            out.append(chip("Open the form anyway", cont("do_fill"), primary=not missing))
+        # choiceChips (validate): removed with the validate step (owner requirement A)
         in_tour_step = step in TOUR_STEPS
         unsaved = (
             not in_form
@@ -2599,8 +2402,7 @@ class RaiseClaimChat(ChatFlow):
         if not in_form and not in_tour_step and step not in ("gaps", "validate", "start"):
             out.append(chip("Fill the form", cont("request_fill"), primary=step == "confirm"))
         if not in_tour_step and (step != "start" or in_form):
-            if not in_form:
-                out.append(chip("What's left?", cont("show_progress")))
+            # (the old "What's left?" chip before it is removed: owner requirement A)
             out.append(chip("Show my claim", cont("show_my_claim")))
         if not in_tour_step and picked:
             out.append(chip("How is DA worked out?", cont("tell_note", note=DA_RULES)))
@@ -2627,6 +2429,8 @@ class RaiseClaimChat(ChatFlow):
             "buttons": buttons,
             "claim": snapshot(self.claim, picked["tour"] if picked else None),
             "page": page or None,
+            # owner requirement C: given with a typed turn's reply (worked out when the message is "talk")
+            "bills": self.s.get("billsText"),
         }
 
     def composer(self) -> dict[str, Any]:

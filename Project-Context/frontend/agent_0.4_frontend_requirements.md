@@ -249,12 +249,20 @@ Each must look and read as with the old assistant (side by side with `VITE_AGENT
 | 3 | raise_page | Attach 3 bills, 1 a duplicate, 1 a .docx | `📎` bubbles for the new one; "Your bill is being read…"; pills "Processing your bill…"; later one report with New / Duplicate / Not relevant groups; draft saved for the right tour |
 | 4 | raise_page | Attach bills, close the window before they are read | Launcher "Your bills are read. Open me to go through them."; opening shows the report |
 | 5 | raise_page | Close the browser, come back the next day | The kept report comes first in the greeting |
-| 6 | raise_page | Type "left Noida 5 Oct by air, back 8th by train" | Tour question with tour chips; then missing details one at a time; review questions; "Fill the form" opens the form with the rows and files |
+| 6 | raise_page | Type "left Noida 5 Oct by air, back 8th by train" | Tour question with tour chips; then the claim read out (no questions about missing details, stays, leave or review: owner requirement 2026-11-06); "Fill the form" opens the form with the rows and files at once |
+| 6b | raise_page, raise_form | Ask "What is the total of these uploaded bills?" or "total of my drafts without DA" | An answer with the amounts the agent worked out (each bill counted once); an amount that is not on a bill is said to be unknown |
 | 7 | raise_form | Attach a bill inside the claim form | Rows added to the form, the form saves, "Do you have more tickets or bills to upload for this claim?" |
 | 8 | within_form | Upload a monthly tour plan | Tours created on the form, gaps asked one at a time, "end tours" ends them and DA appears |
 | 9 | within_form | "submit" with everything complete | Totals and the 7 declarations; "Yes" submits through the form |
 | 10 | any | Gateway down | "The assistant is unavailable right now. Please try again." with "Try again" |
 | 11 | any | Page reload mid-conversation | A fresh chat and greeting, as before; bills whose save had failed are read and saved again |
+
+Owner requirements 2026-11-06 (no protocol change: chips stay server-driven): the Raise Claim chats no longer send
+the chips "What's left?", "Skip this one", "I'll fill the rest on the form", the travel-mode chips of a missing detail,
+"📎 Yes, upload hotel bill" / "✍️ Yes, I'll type it" / "No stay", "Yes, I was on leave" / "No leave", the review
+chips ("📎 Upload it", "I don't have it / not needed", "Yes, it's right", "No, remove it", "Done, I've fixed it",
+"I'll fix it on the form") and "Sort them out here" / "Open the form anyway". A frontend that only renders the chips it
+is sent needs no change.
 
 ---
 

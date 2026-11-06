@@ -46,6 +46,8 @@ class NarratorView(TypedDict, total=False):
     claim: str | None
     # the page around the chat (its lists and counts)
     page: str | None
+    # bill amounts and claim totals worked out in code (the Raise Claim chats; owner requirement 2026-11-06)
+    bills: str | None
 
 
 @dataclass
@@ -169,6 +171,10 @@ class ChatFlow:
     def system_prompt(self) -> str:
         """The narrator's system prompt for typed turns (narratorPrompt(domain))."""
         return ""
+
+    def brief_prompt(self) -> str | None:
+        """The narrator's system prompt for replies without a typed message; None = the old `brief` prompt."""
+        return None
 
     def narrator_view(self) -> NarratorView:
         return {"buttons": [c.label for c in self.chips()]}

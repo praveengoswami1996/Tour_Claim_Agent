@@ -364,11 +364,14 @@ def _rows_text(rows: BillRows | dict[str, Any]) -> str:
     return " and ".join(p for p in (journeys and _plural(journeys, "journey"), stays and _plural(stays, "stay")) if p)
 
 
-def saved_claim_text(args: dict[str, Any]) -> str:
+def saved_claim_text(args: dict[str, Any], *, gaps: bool = True) -> str:
     """savedClaim.ts:savedClaimText: what the bills mean for the saved claim, day by day.
 
     "Your saved claim already has 10 Sep and 12 Sep. These bills add 11 Sep. Every day of the tour is now covered."
     `args`: claim, saved, added, alreadySaved, merged, tour.
+
+    `gaps=False` (owner requirement 2026-11-06, the Raise Claim chat): the last line, about the days of the tour that
+    have no bills ("Still no bills for ...", "Every day of the tour is now covered."), is left out.
     """
     claim, saved, added = args["claim"], args["saved"], args["added"]
     already_saved, merged, tour = args["alreadySaved"], args["merged"], args["tour"]
@@ -391,6 +394,8 @@ def saved_claim_text(args: dict[str, Any]) -> str:
             f"{_rows_text(already_saved)} ({group_days(bill_days(already_saved))}) {'is' if n == 1 else 'are'} "
             f"already in your saved claim, so I didn't add {'it' if n == 1 else 'them'} again."
         )
+    if not gaps:
+        return "\n".join(lines)
     missing = uncovered_days(merged, tour)
     if len(missing) > 0:
         lines.append(f"Still no bills for {group_days(missing)}.")

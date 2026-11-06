@@ -457,3 +457,50 @@ HOTEL = {
 }
 
 PDF = b"%PDF-1.4 synthetic test file"
+
+
+# ─── bills with amounts, drafts with amounts (owner requirement 2026-11-06: billing questions) ────────────────
+
+
+def with_claimed(result: dict[str, Any], amount: Any) -> dict[str, Any]:
+    """A copy of an OCR result whose bill gives `claimedAmountWithTax` (every journey's amountDetails and every
+    stay's invoice)."""
+    out = json.loads(json.dumps(result))
+    tour_details = out.get("tourDetails")
+    if tour_details:
+        for leg in [tour_details, *tour_details.get("tourLegs", [])]:
+            leg.setdefault("amountDetails", {})["claimedAmountWithTax"] = amount
+    for stay in (out.get("accommodationDetails") or {}).get("entries", []):
+        stay.setdefault("invoice", {})["claimedAmountWithTax"] = amount
+    return out
+
+
+def renamed(result: dict[str, Any], file_name: str) -> dict[str, Any]:
+    """A copy of an OCR result as read from another file (another scan of the same bill)."""
+    out = json.loads(json.dumps(result))
+    out["meta"] = {"per_file_results": [{"filename": file_name, "success": True}]}
+    return out
+
+
+def raise_draft(
+    tour_id: int,
+    *,
+    journeys: list[dict[str, Any]] = (),  # type: ignore[assignment]
+    stays: list[dict[str, Any]] = (),  # type: ignore[assignment]
+    da: list[dict[str, Any]] = (),  # type: ignore[assignment]
+    leave: list[dict[str, Any]] = (),  # type: ignore[assignment]
+    draft_id: int = 8001,
+) -> dict[str, Any]:
+    """A saved Raise Claim draft as GetRaiseClaimDraft returns it (rows as JSON text, the claim form's DTOs)."""
+    data: dict[str, Any] = {"DraftId": draft_id, "EmpId": 1001, "EmpTourPlanId": tour_id}
+    if journeys:
+        data["TransportaionDetailDtos"] = json.dumps(list(journeys))
+    if stays:
+        data["AccomodationDetailDto"] = json.dumps(list(stays))
+    if da:
+        data["DailyAllowanceDto"] = json.dumps(list(da))
+    if leave:
+        data["LeaveAvailedDto"] = json.dumps(list(leave))
+    data["transportationFileReferences"] = []
+    data["accomodationFileReferences"] = []
+    return {"draftId": draft_id, "empTourPlanId": tour_id, "lastSavedDate": "2026-09-05T10:00:00", "draftData": data}

@@ -209,6 +209,8 @@ class Narrator:
                 # them); "ok", "thanks" is not about the claim: it gets neither
                 claim=view.get("claim") if about_claim else None,
                 page=view.get("page") if about_claim else None,
+                bills=view.get("bills") if about_claim else None,
+                brief_prompt=turn.flow.brief_prompt(),
                 on_text=lambda text: show(text, True) if text else None,
             )
             reply = result.reply

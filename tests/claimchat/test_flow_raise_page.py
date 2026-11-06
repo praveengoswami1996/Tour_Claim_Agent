@@ -18,6 +18,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.fakes import FLIGHT_BACK, FLIGHT_OUT, GATEWAY_BASE, PDF, FakeBackend, make_token, tour
+from tourclaim_agent.claimchat.ai.assistant_actions import FORM_TALK_NOTE
+from tourclaim_agent.claimchat.flows.raise_claim import BILLS_RULE, BRIEF_PROMPT, NO_GAPS_RULE, UNDERSTAND_RULES
 from tourclaim_agent.main import create_app
 
 ORIGIN = "https://tour.example"
@@ -62,6 +64,21 @@ def brief(*notes: str, question: str | None = None) -> str:
     listed = "\n".join(f"{i}. {n}" for i, n in enumerate(notes, 1))
     parts = [f"NOTES:\n{listed}", *([f"QUESTION:\n{question}"] if question else []), BRIEF_END]
     return "\n\n".join(parts)
+
+
+# owner requirement A (2026-11-06): what must never be said to the model about a claim
+_GAP_WORDS = re.compile(
+    r"missing|still no bills|not covered|stay anywhere overnight|on leave on any day|what's left|mandatory|"
+    r"incomplete|worth a check|will flag|sort them out",
+    re.IGNORECASE,
+)
+
+
+def gap_words(message: str) -> list[str]:
+    """Words about missing information in a message to the model (the employee's own words and the old in-form
+    rule that forbids them are left out)."""
+    text = re.sub(r"^EMPLOYEE SAID:\n.*?\n\n", "", message, flags=re.S).replace(FORM_TALK_NOTE, "")
+    return _GAP_WORDS.findall(text)
 
 
 class Chat:
@@ -241,6 +258,8 @@ class TestGreeting:
             '\n\nSAVED DRAFTS IN DETAIL (what each saved claim holds):\n[{"tourId":503,"route":"Noida → Mumbai"'
             in typed
         )
+        # owner requirement 2026-11-06: what the draft lacks is not given to the model
+        assert '"missing"' not in typed and not gap_words(typed)
         assert "SAVED CLAIMS:\n#503: Noida → Mumbai · 20 Aug 2026 – 22 Aug 2026" in chat.sent[0]["message"]
 
     def test_not_now_drops_the_saved_claims(self, client, backend):
@@ -529,6 +548,8 @@ class TestTypedClaim:
         # what understand() is given: the open question, the context and the recent chat (without this message)
         assert understand["temperature"] == 0.1 and understand["max_tokens"] == 600
         assert understand["system_prompt"].startswith("You read one message from a DFCCIL employee")
+        # owner requirements 2026-11-06: amount questions are "talk", nothing about missing details
+        assert understand["system_prompt"].endswith(UNDERSTAND_RULES)
         assert (
             "\n\nCONTEXT:\nWhere the chat is: the Raise Claim page. Tour: not chosen yet.\nCURRENT CLAIM:\nToday: "
             in (understand["message"])
@@ -537,11 +558,15 @@ class TestTypedClaim:
             ". The tour is not known yet; it is worked out from the bills.\n"
             "IN THE CLAIM NOW: 0 journeys, 0 stays.\nJOURNEYS\n"
             "T1: from=- to=- departure=- - arrival=- - mode=select bills=0 (blank row)\n"
-            "STAYS\n(no stays)\nLEAVE\n(no leave)\n\n"
+            "STAYS\n(no stays)\nLEAVE\n(no leave)\n"
+            "The chat never asks about or points out missing details, mandatory fields or missing documents. "
+            'Questions about bill amounts or totals (of bills, tours or drafts, with or without DA) are "talk".\n\n'
             'RECENT CHAT (oldest first):\nAssistant: Say word for word: "Upload your tour tickets/bills/receipts"\n\n'
             "EMPLOYEE'S MESSAGE:\nleft Noida 20 Aug by train, back 22nd by train\n\nAnswer with the JSON object only."
         )
         assert "OPEN QUESTION" not in understand["message"]  # step start has no question
+        # "What's left?" is no longer an action
+        assert "- show_progress:" not in understand["message"]
         assert what_happened(narrate["message"]) == (
             "1. Updated:\n• Journey 1: from Noida\n• Journey 1: to Mumbai\n• Journey 1: departure date 20 Aug 2026\n"
             "• Journey 1: Rail\n• Journey 2: from Mumbai\n• Journey 2: to Noida\n• Journey 2: departure date 22 Aug "
@@ -552,6 +577,7 @@ class TestTypedClaim:
             "right?"
         )
         assert "OPEN QUESTION:\nAre the uploaded bills for the suggested tour?" in narrate["message"]
+        assert narrate["system_prompt"].endswith(f"{NO_GAPS_RULE}\n\n{BILLS_RULE}")
         assert chips(events) == ["Yes, that's right", "No, choose another"]
 
         # "No, choose another": every tour, the first one primary
@@ -559,88 +585,57 @@ class TestTypedClaim:
         assert chat.sent[-1]["message"] == brief(
             "Okay, which tour is this claim for?", question="Which tour is this claim for?"
         )
+        assert chat.sent[-1]["system_prompt"] == BRIEF_PROMPT
         assert chips(events) == [
             "Noida → Mumbai · 20 Aug 2026 – 22 Aug 2026",
             "Noida → Chennai · 01 Sep 2026 – 03 Sep 2026",
         ]
         assert of(events, "chips")[-1]["items"][0]["primary"] is True
 
+        # the tour is chosen: no questions about missing details, stays or leave, no review: the claim is read out
         events = chat.tap("Noida → Mumbai · 20 Aug 2026 – 22 Aug 2026")
         assert of(events, "status")[0]["busy"] == "Getting your tour details…"
-        first_question = "What time did you leave for journey 1 (Noida → Mumbai) on 20 Aug 2026?"
+        readout = (
+            "Your claim:\n\nJourneys\n1. Noida → Mumbai · 20 Aug 2026 --:-- to — --:-- · Rail\n"
+            "2. Mumbai → Noida · 22 Aug 2026 --:-- to — --:-- · Rail\n\nStays\nNo stays added.\n\n"
+            "Leave\nNo leave.\n\nIf anything looks off, tell me and I'll fix it. When you're happy, say \"fill the "
+            'form".'
+        )
         assert chat.sent[-1]["message"] == (
             "NOTES:\n1. Claim for Noida → Mumbai.\n"
             '   data: [{"label":"Tour","value":"#503"},{"label":"Dates","value":"20 Aug 2026 – 22 Aug 2026"}]\n'
             "2. The bills are now in a claim for Noida → Mumbai · 20 Aug 2026 – 22 Aug 2026, but it is not saved yet. "
             "In one short line, say it is not saved as a draft yet.\n"
-            f"3. {first_question}\n\n(3 more after this one)\n\n"
-            '(If you would rather fill something on the form yourself, just say "skip".)\n\n'
-            f"QUESTION:\n{first_question}\n\n{BRIEF_END}"
+            f"3. {readout}\n\n{BRIEF_END}"
         )
-        assert chips(events) == [
-            "Skip this one",
-            "I'll fill the rest on the form",
-            "Save as draft",
-            "Fill the form",
-            "What's left?",
-            "Show my claim",
-            "How is DA worked out?",
-            "↩ Undo last change",
-            "↩ Different tour",
-        ]
-        assert of(events, "composer")[-1]["placeholder"] == "Type your answer…"
-        assert of(events, "status")[-1]["header"] == "Tour #503 · you review and submit"
-
-        # the other details in one message, then the stay and leave questions one at a time
-        events = chat.say("7:15 to 9:30, back 6 pm arriving 10 am next day", TIMES)
-        assert what_happened(chat.sent[-1]["message"]).endswith(
-            '2. Did you stay anywhere overnight? You can upload the hotel bill or just tell me, like "guest house in '
-            'Ahmedabad, 5th to 8th". Say "no" if you didn\'t.'
-        )
-        assert chips(events)[:3] == ["📎 Yes, upload hotel bill", "✍️ Yes, I'll type it", "No stay"]
-        events = chat.tap(
-            "No stay",
-        )
-        assert of(events, "user_message") == [{"type": "user_message", "text": "no"}]
-        # the chip's words go through the model like typed ones (no understand reply scripted: "talk")
-        assert chips(events)[:3] == ["📎 Yes, upload hotel bill", "✍️ Yes, I'll type it", "No stay"]
-        events = chat.say("no", {"action": "no_stay"})
-        assert what_happened(chat.sent[-1]["message"]) == (
-            '1. Were you on leave on any day of the tour? For example, "leave on 7th". Say "no" if not.'
-        )
-        assert chips(events)[:2] == ["Yes, I was on leave", "No leave"]
-        events = chat.say("no", {"action": "no_leave"})
-        # the review: one question at a time, with its chips
-        assert '"kind":"uncoveredDays","mustFix":false' in chat.sent[-1]["message"]
-        assert chips(events)[:2] == ["📎 Upload it", "I don't have it / not needed"]
-        asked = 0
-        while chips(events)[:2] == ["📎 Upload it", "I don't have it / not needed"] and asked < 20:
-            events = chat.tap("I don't have it / not needed")
-            asked += 1
-        # the day not covered, the nights in Mumbai, four station rides, local travel, two tickets
-        assert asked == 9
-        readout = chat.sent[-1]["message"]
-        assert readout.endswith(
-            "2. Your claim:\n\nJourneys\n1. Noida → Mumbai · 20 Aug 2026 07:15 to 20 Aug 2026 09:30 · Rail\n"
-            "2. Mumbai → Noida · 22 Aug 2026 18:00 to 23 Aug 2026 10:00 · Rail\n\nStays\nNo stays added.\n\n"
-            "Leave\nNo leave.\n\nIf anything looks off, tell me and I'll fix it. When you're happy, say \"fill the "
-            'form".'
-            f"\n\n{BRIEF_END}"
-        )
-        # the settled note before the read-out has no tone, so the reply has none (useNarrator toneOf)
-        assert "tone" not in of(events, "reply")[0]
         assert chips(events) == [
             "Save as draft",
             "Fill the form",
-            "What's left?",
             "Show my claim",
             "How is DA worked out?",
             "↩ Undo last change",
             "↩ Different tour",
         ]
         assert of(events, "chips")[-1]["items"][1]["primary"] is True  # "Fill the form" in confirm
+        assert of(events, "composer")[-1]["placeholder"] == "Type a detail, a correction or a question…"
+        assert of(events, "status")[-1]["header"] == "Tour #503 · you review and submit"
 
-        # fill the form: the page opens it with the claim (bridge openForm)
+        # typed details are applied; nothing is asked about what the claim still lacks
+        events = chat.say("7:15 to 9:30, back 6 pm arriving 10 am next day", TIMES)
+        assert what_happened(chat.sent[-1]["message"]) == (
+            "1. Updated:\n• Journey 1: departure time 07:15\n• Journey 1: arrival date 20 Aug 2026\n"
+            "• Journey 1: arrival time 09:30\n• Journey 2: departure time 18:00\n• Journey 2: arrival date 23 Aug 2026"
+            "\n• Journey 2: arrival time 10:00\n"
+            "2. Your claim:\n\nJourneys\n1. Noida → Mumbai · 20 Aug 2026 07:15 to 20 Aug 2026 09:30 · Rail\n"
+            "2. Mumbai → Noida · 22 Aug 2026 18:00 to 23 Aug 2026 10:00 · Rail\n\nStays\nNo stays added.\n\n"
+            "Leave\nNo leave.\n\nIf anything looks off, tell me and I'll fix it. When you're happy, say \"fill the "
+            'form".'
+        )
+        assert "\n\nOPEN QUESTION:\n" not in chat.sent[-1]["message"]
+        assert chips(events)[:2] == ["Save as draft", "Fill the form"]
+
+        # fill the form: straight to the hand-off (no list of what the form will flag), the page opens it with the
+        # claim (bridge openForm)
         events = chat.tap("Fill the form")
         (call,) = chat.bridge_calls
         assert call["method"] == "openForm" and call["args"]["tourId"] == 503
@@ -649,10 +644,35 @@ class TestTypedClaim:
             ("Mumbai", "Noida"),
         ]
         assert chat.sent[-1]["message"] == (
-            "NOTES:\n1. The claim form was filled with the claim and opened. Ask the employee to review each section, "
-            "attach anything missing (amounts and bill files go on the form), then submit.\n\n"
+            "NOTES:\n1. The claim form was filled with the claim and opened. Ask the employee to review each section "
+            "(amounts and bill files go on the form), then submit.\n\n"
             f"{BRIEF_END}"
         )
+        # nothing said to the model in this chat (notes, data, chips, open questions) is about missing information
+        for call in backend.gateway_calls:
+            if "\n\nEMPLOYEE'S MESSAGE:\n" not in call["message"]:
+                assert not gap_words(call["message"]), call["message"]
+
+    def test_fill_the_form_with_an_incomplete_claim_goes_straight_to_the_form(self, client, backend):
+        chat = page(client, backend)
+        chat.open()
+        # one journey with no times and no return: the old chat asked about each, then listed what the form flags
+        chat.say("went to Mumbai on 20 Aug", journeys((0, "Noida", "Mumbai", "2026-08-20", "rail")))
+        events = chat.tap("Yes, that's right")
+        assert "What time" not in chat.sent[-1]["message"] and "QUESTION:" not in chat.sent[-1]["message"]
+        events = chat.say("fill the form", {"action": "fill_form"})
+        assert [c["method"] for c in chat.bridge_calls] == ["openForm"]
+        assert what_happened(chat.sent[-1]["message"]).startswith("1. The claim form was filled with the claim")
+        assert "Sort them out here" not in chips(events) and "Open the form anyway" not in chips(events)
+        assert chat.session.state["step"] != "validate"
+        # "what is missing?" is answered by the model with the owner's rule, never with a list
+        chat.say("what is missing in my claim?", {"action": "show_progress"})
+        typed = chat.sent[-1]
+        assert what_happened(typed["message"]).startswith("1. Nothing in the claim was changed by this message.")
+        assert NO_GAPS_RULE in typed["system_prompt"]
+        for call in backend.gateway_calls:
+            if "\n\nEMPLOYEE'S MESSAGE:\n" not in call["message"]:
+                assert not gap_words(call["message"].split("\n\nCLAIM:\n")[0]), call["message"]
 
     def test_save_as_draft_and_open_it(self, client, backend):
         chat = page(client, backend)
@@ -697,7 +717,7 @@ class TestTypedClaim:
         assert "OPEN QUESTION:\nShall I clear the claim and start over?" in typed
         assert "↩ Undo last change" in chips(events) and "Yes, start over" not in chips(events)
         events = chat.tap("↩ Undo last change")
-        assert chat.sent[-1]["message"].startswith("NOTES:\n1. Last change undone.\n2. What time did you leave")
+        assert chat.sent[-1]["message"].startswith("NOTES:\n1. Last change undone.\n2. Your claim:\n\nJourneys\n")
 
     def test_a_message_too_long_is_not_read(self, client, backend):
         chat = page(client, backend)
