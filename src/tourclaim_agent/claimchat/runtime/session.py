@@ -18,8 +18,8 @@ Next to the sessions: staged file bytes (`chat_files`, per workflow and key) and
 (`chat_local_storage`, per employee and key: kept bill reports, drafts saved by the chat). SQLite now; PostgreSQL
 later behind the same methods.
 
-A session not touched for `idle_seconds` (15 minutes) counts as a closed tab: what it still holds of the OCR queue is
-given back (the old `pagehide` / `recoverOcrClaims`), and the conversation is gone (404, the frontend starts a new one).
+A session not touched for `idle_seconds` (15 minutes) gives back what it still holds of the OCR queue (the old
+`pagehide` / `recoverOcrClaims` for a silent tab); the conversation itself stays and continues with the next request.
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ log = logging.getLogger(__name__)
 
 OPEN = "open"
 ABANDONED = "abandoned"
-EXPIRED = "expired"
 
 # a session not touched for this long counts as a closed tab (runtime design §7)
 IDLE_SECONDS = 15 * 60
@@ -420,7 +419,7 @@ class Locks:
 ReleaseHeld = Callable[[ChatSession], Awaitable[bool]]
 
 
-async def expire_idle_sessions(
+async def give_back_idle_holdings(
     store: SessionStore,
     locks: Locks,
     emp_code: str,
@@ -429,28 +428,28 @@ async def expire_idle_sessions(
     idle_seconds: float = IDLE_SECONDS,
     now: float | None = None,
 ) -> list[str]:
-    """Closes the employee's sessions not touched for `idle_seconds` (a closed tab), giving back what they hold.
+    """Gives back the OCR results held by the employee's chats not touched for `idle_seconds`.
 
-    `release(session)` gives back the session's taken OCR results (POST Ocr/Release with the caller's token) and
-    returns whether it did; a session whose results could not be given back stays as it is and is tried again on
-    the employee's next request (the old recoverOcrClaims, tried again on the next load). Sessions with a turn
-    running are left alone. Returns the ids of the sessions closed.
+    The old chat lived as long as its tab was open, so an idle chat is not closed: only what it took from the bill
+    queue and has not settled is given back (the old browser gave it back when a tab went silent), and the chat
+    carries on with its next request. A result it still needs is taken again (MarkAsRead) on the normal path.
+
+    `release(session)` gives back the session's held results (POST Ocr/Release with the caller's token) and returns
+    whether it did; a session whose results could not be given back is tried again on the employee's next request.
+    Sessions with a turn running are left alone. Returns the ids of the sessions whose results were given back.
     """
     now = time.time() if now is None else now
-    closed: list[str] = []
+    released_from: list[str] = []
     for session in await store.stale(emp_code, now - idle_seconds):
-        if locks.turn(session.workflow_id).locked():
+        if not session.held_document_ids() or locks.turn(session.workflow_id).locked():
             continue
-        if session.held_document_ids():
-            try:
-                released = await release(session)
-            except Exception:  # noqa: BLE001 - tried again on the next request
-                log.warning("could not give back the OCR results of an idle chat", exc_info=True)
-                released = False
-            if not released:
-                continue
-        session.status = EXPIRED
-        await store.save(session, touch=False)
-        await store.delete_files(session.workflow_id)
-        closed.append(session.workflow_id)
-    return closed
+        try:
+            released = await release(session)
+        except Exception:  # noqa: BLE001 - tried again on the next request
+            log.warning("could not give back the OCR results of an idle chat", exc_info=True)
+            released = False
+        if released:
+            # not touched: the chat is still idle, and it holds nothing any more
+            await store.save(session, touch=False)
+            released_from.append(session.workflow_id)
+    return released_from

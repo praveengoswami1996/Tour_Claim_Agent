@@ -9,7 +9,7 @@ Paths shared with the 0.3 conversations are told apart by the request: `POST /se
 `mode` are chats, without one they are 0.3; `DELETE /workflows/{id}`, `/messages` and `/attachments` go to the chat
 runtime when the workflow is a chat, else to the 0.3 handlers (api/routes.py).
 
-Errors: 401 `invalid_token` / `session_expired`, 404 `workflow_not_found` (unknown, abandoned or expired chat: the
+Errors: 401 `invalid_token` / `session_expired`, 404 `workflow_not_found` (unknown or abandoned chat: the
 frontend starts a new one and calls /open), 404 `bridge_call_not_found`, 400 `unknown_mode`, 503 `backend_error`.
 A failure after the response started arrives as an `error` event before `done`.
 """

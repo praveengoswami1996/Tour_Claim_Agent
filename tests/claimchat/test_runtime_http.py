@@ -413,12 +413,30 @@ class TestBills:
         response = client.post(f"/v1/workflows/{workflow_id}/open", headers=auth(), json={"active": True})
         assert response.status_code == 404 and response.json()["error"] == "workflow_not_found"
 
-    def test_an_idle_chat_counts_as_a_closed_tab(self, client, backend):
+    def test_an_idle_chat_gives_back_what_it_holds_and_carries_on(self, client, backend):
         workflow_id = self.read_two(client, backend)
+        assert session_of(client, workflow_id).held_document_ids() == [7002]
         client.app.state.chat.idle_seconds = -1  # (the clock may not have moved on since the last save)
-        new_chat(client)  # any request of the employee closes their idle chats
+        new_chat(client)  # any request of the employee gives back what their idle chats hold
         client.app.state.chat.idle_seconds = 15 * 60
         assert backend.released == [7002]
-        assert session_of(client, workflow_id).status == "expired"
-        response = client.post(f"/v1/workflows/{workflow_id}/poll", headers=auth(), json={"active": True})
-        assert response.status_code == 404
+        session = session_of(client, workflow_id)
+        assert session.status == "open" and session.held_document_ids() == []
+        # the chat continues: the given-back result is on the list again and is taken again the normal way
+        events = call(client, workflow_id, "poll", {"active": True})
+        assert replies(events) == ["Read 1 bills: back.pdf"]
+        assert backend.calls.count("POST /api/Ocr/MarkAsRead") == 2
+        assert session_of(client, workflow_id).state["read"] == ["back.pdf"]
+        events = call(client, workflow_id, "messages", {"text": "still there?", "active": True})
+        assert replies(events) == ["You said: still there?"]
+
+    def test_a_chat_holding_nothing_is_left_alone_when_idle(self, client, backend):
+        workflow_id = new_chat(client)
+        call(client, workflow_id, "open", {"active": True})
+        client.app.state.chat.idle_seconds = -1
+        new_chat(client)
+        client.app.state.chat.idle_seconds = 15 * 60
+        assert backend.released == [] and session_of(client, workflow_id).status == "open"
+        assert replies(call(client, workflow_id, "messages", {"text": "hi again", "active": True})) == [
+            "You said: hi again"
+        ]

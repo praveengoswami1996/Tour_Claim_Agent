@@ -16,7 +16,7 @@ What the server does instead of the browser (design §7):
 - The old module-level list and `localFiles` were per page load; here they are per chat session.
 - Browser leases (`aryaan.ocrClaims.v1.*`, the tab heartbeat, `pagehide` keepalive release, `recoverOcrClaims`) are
   replaced by the session itself: results taken and not settled are recorded in the session (`ocr.claims`), and are
-  given back when the chat is abandoned (Start over) or expires (not touched for 15 minutes), see session.py.
+  given back when the chat is abandoned (Start over) or left idle (not touched for 15 minutes), see session.py.
 - Taking runs one at a time per employee (the lock passed in).
 - A downloaded file (GetFile) keeps its bytes next to the session (`dl-<id>`), so saving a draft does not fetch it
   twice; the old browser held it as a File object in memory.
@@ -631,7 +631,7 @@ class OcrSession:
     async def give_back_ocr_results(self, ids: Iterable[int]) -> None:
         """ocrClaims.ts:giveBackOcrResults: not applied: unread again, so they come back on the next look.
 
-        A failed Release keeps them as taken: they are given back when the chat is closed or expires.
+        A failed Release keeps them as taken: they are given back when the chat is closed or left idle.
         """
         ids = list(ids)
         if not ids:
@@ -655,8 +655,9 @@ class OcrSession:
         self.hide(ids)
 
     async def give_back_all(self) -> bool:
-        """The chat is gone (Start over, an expired session): every result it still holds is given back.
+        """Every result the chat still holds is given back (Start over, or the chat was left idle).
 
+        They are let back on the list, so a chat that carries on takes them again (MarkAsRead) when it needs them.
         Returns whether nothing is held any more.
         """
         held = self.held
@@ -664,9 +665,10 @@ class OcrSession:
             try:
                 await self.api.release_ocr(held)
             except Exception:  # noqa: BLE001
-                log.info("could not give back %d OCR result(s) of a closed chat", len(held))
+                log.info("could not give back %d OCR result(s) of a chat", len(held))
                 return False
             self._drop_claims(held)
+            self._s["hidden"] = [i for i in self._s["hidden"] if i not in set(held)]
         return True
 
 

@@ -43,7 +43,7 @@ from tourclaim_agent.claimchat.runtime.session import (
     Locks,
     SessionStore,
     WorkflowFiles,
-    expire_idle_sessions,
+    give_back_idle_holdings,
 )
 from tourclaim_agent.clients.allowlist import Service
 from tourclaim_agent.clients.errors import BackendUnauthorized
@@ -494,8 +494,8 @@ class ChatRuntime:
         )
 
     # ── housekeeping ──
-    async def expire_idle(self, user: ChatUser) -> list[str]:
-        """Closes the caller's chats not touched for 15 minutes (a closed tab), giving back what they hold."""
+    async def release_idle(self, user: ChatUser) -> list[str]:
+        """Gives back the OCR results held by the caller's chats not touched for 15 minutes (the chats stay)."""
 
         async def release(session: ChatSession) -> bool:
             ocr = OcrSession(
@@ -506,7 +506,7 @@ class ChatRuntime:
             )
             return await ocr.give_back_all()
 
-        return await expire_idle_sessions(
+        return await give_back_idle_holdings(
             self.store, self.locks, user.employee.emp_code, release, idle_seconds=self.idle_seconds
         )
 
@@ -522,7 +522,7 @@ class ChatRuntime:
         flow_cls = flow_for(mode)
         if flow_cls is None:
             raise UnknownMode(mode)
-        await self.expire_idle(user)
+        await self.release_idle(user)
         session = ChatSession.new(user.employee.emp_code, mode, params, flow_cls.initial_state(params))
         await self.store.create(session)
         return session
@@ -532,7 +532,7 @@ class ChatRuntime:
         flow_cls = flow_for(mode)
         if flow_cls is None:
             raise UnknownMode(mode)
-        await self.expire_idle(user)
+        await self.release_idle(user)
         session = ChatSession.new(user.employee.emp_code, mode, params, flow_cls.initial_state(params))
         storage = await self.store.load_storage(user.employee.emp_code)
         turn = Turn(self, session, user, flow_cls, storage)
@@ -565,7 +565,7 @@ class ChatRuntime:
     # ── turns ──
     async def start_turn(self, user: ChatUser, workflow_id: str, data: TurnInput) -> Channel:
         """Starts a turn; returns the channel its events arrive on (the first part of the HTTP response)."""
-        await self.expire_idle(user)
+        await self.release_idle(user)
         await self.owned(user, workflow_id)
         channel: Channel = asyncio.Queue()
         task = asyncio.create_task(self._run_turn(user, workflow_id, data, channel))

@@ -80,6 +80,7 @@ Priority: **M** = Must, **S** = Should.
 | FE-EV-07 | `bills` lists staged and in-flight files for the pills above the composer ("Processing your bill…" / "Processing N bills…" with names; staged files with ✕ to remove → `POST /actions` with the chip id given on the pill). | M |
 | FE-EV-08 | `bridge_call`: carry out the call on the page (§5) and answer it with `POST /bridge/{callId}`. The answer's events continue the same turn; keep the typing indicator on until a response arrives with no further `bridge_call`. | M |
 | FE-EV-09 | Unknown event types are ignored (forward compatibility). | S |
+| FE-EV-10 | `reply_remove` removes the bubble with that `id` (a streamed reply the model then failed to finish; the old narrator dropped it the same way). `messages_cleared` empties the message list (the old chat re-greeting when the drafts changed). `user_message` adds a user bubble with `text` (a chip whose old `onClick` sent words, e.g. "yes"). `error` shows the system notice with "Try again". | M |
 
 ### 3.4 FE-LAU: launchers
 
@@ -154,7 +155,11 @@ type AgentEvent =
   | { type: 'composer'; placeholder: string; canType: boolean; canAttach: boolean }
   | { type: 'status'; header: string; busy?: string | null; launcher?: string | null; held?: boolean }
   | { type: 'bills'; staged: FilePill[]; inFlight: FilePill[] }
-  | { type: 'bridge_call'; id: string; method: BridgeMethod; args?: unknown };
+  | { type: 'bridge_call'; id: string; method: BridgeMethod; args?: unknown }
+  | { type: 'reply_remove'; id: string }                         // take out a reply that started streaming, then failed
+  | { type: 'messages_cleared' }                                  // clear the chat's messages (the old re-greeting)
+  | { type: 'user_message'; text: string }                        // add a user bubble (a chip that "says" words)
+  | { type: 'error'; message: string };                           // a failure after the stream started: show the system notice
 
 interface Chip {
   id: string;                     // send back in POST /actions
