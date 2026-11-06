@@ -51,7 +51,7 @@ Priority: **M** = Must, **S** = Should.
 
 | ID | Requirement | Pri |
 |---|---|---|
-| FE-CONV-01 | When a chat is mounted, create a conversation: `POST /v1/workflows` with `{ mode, tourId?, draftId? }` (`tourId` for `raise_form`, `draftId` for `within_form` when editing). Keep its id for the life of the mount. Store it in sessionStorage per mode (and tour/draft), so a page reload continues the same conversation. | M |
+| FE-CONV-01 | When a chat is mounted, create a conversation: `POST /v1/workflows` with `{ mode, tourId?, draftId? }` (`tourId` for `raise_form`, `draftId` for `within_form` when editing). Keep its id for the life of the mount only: a page reload or a new visit starts a **new** conversation (and greeting), exactly as the old chat started fresh on every mount. Do not store the id across reloads. When a new conversation is created, abandon the previous one if its id is still known (`DELETE`). This is also what makes bills whose save failed ("I'll try again the next time you open the assistant") get read and saved again. | M |
 | FE-CONV-02 | The chat stays **mounted while the window is closed**, as before (ChatPanel hides it). Send `active: true/false` with every call (§4.1): the agent writes replies and goes through read bills **only while the window is open**, exactly as the old narrator and read effect did. | M |
 | FE-CONV-03 | The first time the window opens, call `POST /v1/workflows/{id}/open`. Its reply is the old greeting (Spec A §3, Spec D §9.1). Call it again when the window is reopened after replies were held back (`held: true` in the last `status` event). | M |
 | FE-CONV-04 | The header's **Start over** button (ChatPanel) remounts the chat: abandon the conversation (`DELETE /v1/workflows/{id}`) and create a new one, with no question, exactly as before (Spec A §0.1). | M |
@@ -254,7 +254,7 @@ Each must look and read as with the old assistant (side by side with `VITE_AGENT
 | 8 | within_form | Upload a monthly tour plan | Tours created on the form, gaps asked one at a time, "end tours" ends them and DA appears |
 | 9 | within_form | "submit" with everything complete | Totals and the 7 declarations; "Yes" submits through the form |
 | 10 | any | Gateway down | "The assistant is unavailable right now. Please try again." with "Try again" |
-| 11 | any | Page reload mid-conversation | Same conversation continues (sessionStorage id) |
+| 11 | any | Page reload mid-conversation | A fresh chat and greeting, as before; bills whose save had failed are read and saved again |
 
 ---
 
