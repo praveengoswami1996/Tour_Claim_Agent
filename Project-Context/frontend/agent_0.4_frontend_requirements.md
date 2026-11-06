@@ -215,9 +215,16 @@ Saving drafts from the Raise Claim page is done by the agent itself; no bridge c
 | `saveDraft` | `saveDraft(fakeClickEvent)` (toast "Draft saved successfully!") | — |
 | `submit` | Accept the declarations, wait 100 ms, `submitAllTours()` | `{ submitted: boolean, message?: string }` |
 
-**Form state shape** (`form`): `{ tours: TourData[], totals: { transport, accommodation, da, total }, noOfDays }` —
-`tours` exactly as the form holds them (Spec D §1); `totals` as the form calculated them, because the chat shows
-them before submitting ("totalsText") and the agent never calculates amounts.
+**Form state shape** (`form`): `{ tours: TourData[] }` — `tours` exactly as the form holds them (Spec D §1),
+including each tour's `id`, `tourEnd`, `purpose`, the main journey and every leg (`startDate`, `startTime`, `endDate`,
+`endTime`, `departureDate`, `arrivalDate`, `from`, `to`, `modeOfTravel`, `personalVehicleType`, `distance`), the
+amounts the form stored on them (`amountDetails`, accommodation `invoice` amounts) and the DA entries it generated
+(`daAllowanceDetails.entries[].amount` / `daApplicable`). The chat's totals text adds up these stored values, as the
+old chat did; the form's own totals are not needed.
+
+**Dates:** `JSON.stringify` turns the form's `Date` objects into ISO text, and the agent sends them back the same way.
+On `write`, turn `tourDetails.startDate` / `endDate` (and leg dates held as `Date`) back into `Date` objects
+(`new Date(x)`), so the form holds exactly what the old chat put there.
 
 ---
 
