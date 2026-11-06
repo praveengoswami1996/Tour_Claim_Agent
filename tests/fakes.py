@@ -96,6 +96,9 @@ class FakeBackend:
     gateway_fail: list[int] = field(default_factory=list)
     upload_parts: list[list[str]] = field(default_factory=list)
     list_params: list[dict[str, str]] = field(default_factory=list)
+    # Replies to the old assistant's understand() calls only (their message ends with "EMPLOYEE'S MESSAGE"), in
+    # order: a dict is sent as its JSON. When empty, understand calls fall back to gateway_replies / gateway_reply().
+    understand_replies: list[Any] = field(default_factory=list)
 
     def fail_next(self, endpoint: str, *statuses: int) -> None:
         self.failures.setdefault(endpoint, []).extend(statuses)
@@ -242,7 +245,11 @@ class FakeBackend:
         self.gateway_calls.append(body)
         if self.gateway_fail:
             return httpx.Response(self.gateway_fail.pop(0))
-        reply = self.gateway_replies.pop(0) if self.gateway_replies else gateway_reply(body["message"])
+        if self.understand_replies and "\n\nEMPLOYEE'S MESSAGE:\n" in body["message"]:
+            scripted = self.understand_replies.pop(0)
+            reply = scripted if isinstance(scripted, str) else json.dumps(scripted)
+        else:
+            reply = self.gateway_replies.pop(0) if self.gateway_replies else gateway_reply(body["message"])
         conversation = body.get("conversation_id") or f"conv-{len(self.gateway_calls)}"
         half = len(reply) // 2
 

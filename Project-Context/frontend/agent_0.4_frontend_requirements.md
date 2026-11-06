@@ -80,6 +80,8 @@ Priority: **M** = Must, **S** = Should.
 | FE-EV-07 | `bills` lists staged and in-flight files for the pills above the composer ("Processing your bill…" / "Processing N bills…" with names; staged files with ✕ to remove → `POST /actions` with the chip id given on the pill). | M |
 | FE-EV-08 | `bridge_call`: carry out the call on the page (§5) and answer it with `POST /bridge/{callId}`. The answer's events continue the same turn; keep the typing indicator on until a response arrives with no further `bridge_call`. | M |
 | FE-EV-09 | Unknown event types are ignored (forward compatibility). | S |
+| FE-EV-11 | `open_file_picker` opens the composer's file picker, as the old chip did directly. | M |
+| FE-EV-12 | Send the `Origin` header (browsers do) so the saved-claim link chips carry this app's address. | M |
 | FE-EV-10 | `reply_remove` removes the bubble with that `id` (a streamed reply the model then failed to finish; the old narrator dropped it the same way). `messages_cleared` empties the message list (the old chat re-greeting when the drafts changed). `user_message` adds a user bubble with `text` (a chip whose old `onClick` sent words, e.g. "yes"). `error` shows the system notice with "Try again". | M |
 
 ### 3.4 FE-LAU: launchers
@@ -159,7 +161,8 @@ type AgentEvent =
   | { type: 'reply_remove'; id: string }                         // take out a reply that started streaming, then failed
   | { type: 'messages_cleared' }                                  // clear the chat's messages (the old re-greeting)
   | { type: 'user_message'; text: string }                        // add a user bubble (a chip that "says" words)
-  | { type: 'error'; message: string };                           // a failure after the stream started: show the system notice
+  | { type: 'error'; message: string }
+  | { type: 'open_file_picker' };                                 // open the 📎 file picker (the old "Yes, I'll upload more")                           // a failure after the stream started: show the system notice
 
 interface Chip {
   id: string;                     // send back in POST /actions
@@ -197,12 +200,14 @@ The agent only asks; React does exactly what the old bridge objects did, with th
 **Form state shape** (`form`): `{ transportationRows, accommodationRows, leaveRows, includeAccommodation, includeLeave }`
 exactly as the form holds them (stored order). Rows are the form's `TransportationRow` / `AccommodationRow` /
 `LeaveRow` objects; for files send `{ name, size, type, fileId?, isRetained?, tempFilePath?, documentId? }`, never
-the bytes.
+the bytes. Keep each new bill file's `documentId` on its row until the form has saved it (the agent uses it to know which
+bill results the form still needs).
 
 ### 5.2 `raise_page` (Raise Claim page)
 
 | Method | React does | Answer `result` |
 |---|---|---|
+| `openForm` `{ tourId }` (no `state`) | Open a saved claim in the form, as the old `onOpenClaim` (`startClaim(row, false)`) | `{ opened: boolean }` |
 | `openForm` `{ tourId, state }` | The old "Fill the form" hand-off (`fillFormFromAssistant`, Spec E §1.9): fetch every new bill file in `state` (`documentId` without `fileId`) with `GET /Ocr/GetFile/{documentId}` into `File` objects, then `setAssistantDraft({ tourId, state })` and `startClaim(row, true)`. The form applies it as before (rows replaced, retained ids, DA recalculated, toast "Claim Assistant filled your form. Please review it before submitting.") | `{ opened: boolean }` (answer before navigating) |
 
 Saving drafts from the Raise Claim page is done by the agent itself; no bridge call. After the agent saves, it sends a

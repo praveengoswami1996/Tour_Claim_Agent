@@ -71,3 +71,32 @@ still on the rows, the lists the old code computed but dropped. A new draft send
 
 Everything else in the payload is the old one: the parity check (`tools/parity_diff/run1b_py.py`) compares the Python
 payload with the TypeScript one with only the two `Retained...` keys removed.
+
+## Raise Claim chat on the server (`claimchat/flows/raise_claim.py`)
+
+`ClaimChatbot.tsx` (both modes) and the texts of `ClaimAssistantLauncher.tsx`, ported line for line on the runtime.
+What could not be reproduced exactly (CC = ClaimChatbot.tsx line):
+
+| # | Old (browser) | Port |
+|---|---|---|
+| RC1 | `hasMoreFiles` (CC:1709-1713) said its note and opened the file picker (`composerRef.pickFiles()`) | The note, and the event `{type: "open_file_picker"}` (not in the 0.4 contract yet; the frontend should open the picker). The upload chips themselves are chips of kind `upload` |
+| RC2 | Effects ran when their dependencies changed (CC:490, 545, 1241, 1395, 1699, 1755) | They run whenever their guards hold, after the request's handler (runtime design §3). The drafts-changed effect (CC:545-568) also runs as soon as the page's drafts are loaded and right after each save (the old page's drafts prop changed while the save was still busy, so it never re-greeted then) |
+| RC3 | The in-form start (CC:1755-1790) ran again after a failed tour load whenever the page re-rendered (`form` was a new object each render) | Tried again once per request |
+| RC4 | In the form, `tours` was ApproverPage's `assistantTour` (statusId from the URL, `navState.totalDays ?? details.totalDays`) | POST /workflows carries only `tourId`: source, destination and start date come from loadAssistantTour (the same RaiseClaimRequest), `statusId` and `totalDays` from the Raise Claim page's tour list (GetTourRequest). Until the tour is loaded the chat counts as "tours loading" |
+| RC5 | In the form, `onLoadDraft` returned the draft the form had loaded, and `draftTourIds` was `[tourId]` when it had one | The server's draft (GetRaiseClaimDraft), and `[tourId]` when the drafts list has the tour (both are only used on paths the form does not reach) |
+| RC6 | The page re-fetched the drafts after its own changes (delete, save) | The drafts are loaded once per chat and again after the chat's own saves; a draft deleted on the page meanwhile is seen by the next chat |
+| RC7 | `form.write()` was synchronous and could not fail | The bridge `write`; a failed or timed-out write is logged and the chat carries on (the next request's `form` is the truth) |
+| RC8 | `form.read()` always returned the form | A request without `form` keeps the chat's claim as it is |
+| RC9 | A `File` was matched by identity (settleTaken, settleFilesOf, giveBackFilesOf, claimKey) | A bill attached in this chat is a file entry with a `documentId` and no `fileId`; it is matched by that id. The frontend must keep `documentId` on such files in `form` until the form has saved them |
+| RC10 | `error.message` of any thrown error was said (takeResults, uploadBills, stopReading, retryFailed) | The OCR API's and the bridge's messages are said as before; any other (internal) error gives the old fallback text |
+| RC11 | `navigator.onLine === false` in uploadBills: "You seem to be offline…" | Not reproducible on the server (the send fails with the API's "not reachable" message instead) |
+| RC12 | The 10 s `ocrWaitOver` timer let the greeting go on without the bill list | The bill list is asked for when the window opens and on the first request; a failed list counts as loaded (as the old error state) |
+| RC13 | `text.length` / `slice` count UTF-16 units; a cut surrogate pair kept a lone half | Same counts; a pair cut at 200/280/300 units is dropped |
+| RC14 | A typed message or tap while busy was ignored (composer and chips disabled) | Turns run one at a time per chat, so a request never starts busy |
+
+Dead code of ClaimChatbot.tsx (Spec A §8) is not ported: the bulk / split / upload-choice machinery, `finishRead`,
+`dropTaken`, `offerUpload`, `announceGaps`, the steps `gaps` and `submit` (`startSubmit`, `doSubmit`), the outside
+branches of `afterRead` / `noMoreFiles`, and the "Choose a tour myself" chip. Their actions are never offered on a live
+path; one that was would run "talk", as `runs[spec.name] ?? runs.talk`. The quirks of Spec A §8 are kept (e.g.
+`resetAskedRef` stays set after a confirmed start over; the no-drafts greeting has no "Hello"; the saved-claim link
+chip's label is the URL; "I'll fill the rest on the form" opens the form at once).
