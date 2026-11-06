@@ -1,0 +1,16 @@
+const pad=(n)=>String(n).padStart(2,'0');
+const loc=(s)=>{const d=new Date(s);return isNaN(d)?null:`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
+console.log(JSON.stringify(["Oct 5","10/5","Oct 5 26","Oct 5 99","2026 Oct 5","5 Oct 2026 (IST)","Sun Oct 05 2026 00:00:00 GMT+0530 (India Standard Time)","5 Oct 2026 10:00 -5","5 Oct 2026 20:00 PST","Octopus 5 2026","5 Oct 2026 24:00","2026-10","5 Oct 2026 24:01","32 Oct 2026","a5 Oct 2026","Oct5 2026","5 Oct 2026 10 AM","5 Oct 2026 - 7 Oct 2026"].map(loc)));
+console.log([2.5,-2.5,0.49999999999999994,-0.5,1.4].map(Math.round), (99999.995).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}), (0.5).toString(36));
+console.log(["garbage".localeCompare("Select"),"a:b".localeCompare("a0"),"a\x01b".localeCompare("ab")]);
+const PC = await import('./ts/placeCheck.ts'); const IN = await import('./ts/intents.ts');
+console.log(JSON.stringify(["éamount","Café Coffee Day","10:30\u00a0am","😀","a".repeat(79)+"😀"].map(PC.placeProblem)), PC.samePlaceBothEnds("É","e"));
+const f=(n,t,s)=>Object.defineProperty(new File([],n,{type:t}),'size',{value:s});
+console.log(IN.checkFiles([f("photo.HEIC","",10),f("scan.png","image/heif",10),f("a.pdf","text/plain",10),f("big.pdf","",Math.floor(21.5*1024*1024)),f("","",10)]).problems);
+console.log(JSON.stringify([IN.cleanMessage("a\u00a0b\u2028c\ufeffd"), IN.cleanMessage("x\u001cy a\u0085b")]));
+console.log(Number("-0x1"), parseFloat(" -1.5e2x"), parseFloat("1e"), parseFloat("Infinityx"), String([1,null,"a"]));
+const RO = await import('./ts/rowOrder.ts');
+const row=(id,dep="",depT="",arr="",arrT="")=>({id,DateOfTravelSource:dep,TimeOfTravelSource:depT,DateOfTravelDestination:arr,TimeOfTravelDestiNation:arrT});
+console.log(RO.journeysInDateOrder([row("none"),row("12","2026-09-12"),row("arr-11","","","2026-09-11","08:00"),row("10b","2026-09-10T00:00:00","09:00"),row("10a","2026-09-10","09:00"),row("none2")]).map(r=>r.id));
+console.log(RO.journeysInDateOrder([row("S","Select","09:00"),row("g","garbage","18:00"),row("d","05/10/2026")]).map(r=>r.id), RO.staysInDateOrder([{id:"b",checkInDate:"b"},{id:"A",checkInDate:"A"},{id:"x",checkInDate:""}]).map(r=>r.id));
+const rs=[row("a","2026-09-10","09:00","2026-09-12"),row("b","2026-09-10","09:00","2026-09-12"),row("c")]; const e=RO.tripEnds(rs); console.log(e.first.id,e.last.id, JSON.stringify(RO.tripEnds([row("x"),row("y")])));

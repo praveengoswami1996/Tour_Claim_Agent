@@ -1,0 +1,31 @@
+const NOW = 1790000000000; const RealDate = Date;
+class FakeDate extends RealDate { constructor(...a) { if (a.length === 0) super(NOW); else super(...a); } static now() { return NOW; } }
+globalThis.Date = FakeDate; Math.random = () => 0.123456789;
+const CA = await import('./ts/claimAssistant.ts');
+const t = (row, field, value) => ({ section: 'transport', row, field, value });
+const a = (row, field, value) => ({ section: 'accommodation', row, field, value });
+const lv = (row, field, value) => ({ section: 'leave', row, field, value });
+const journey = (o = {}) => ({ ...CA.newTransportRow(), source: 'Noida', destination: 'Pune', DateOfTravelSource: '2026-10-05', TimeOfTravelSource: '10:30', DateOfTravelDestination: '2026-10-05', TimeOfTravelDestiNation: '16:30', ModeOfTravel: 'rail', ...o });
+const claim = () => ({ ...CA.initialClaimState(), transportationRows: [journey()] });
+console.log(CA.newTransportRow().id);
+let s = { ...claim(), accommodationRows: [{ ...CA.newAccommodationRow(), location: 'Pune' }], includeAccommodation: true };
+let r = CA.applyEdits(s, [t(1, 'arrivalDate', '2026-09-05'), t(1, 'distanceKm', '120 km'), t(1, 'mode', 'flight'), a(1, 'type', 'free company lodging'), a(1, 'type', 'free'), a(1, 'checkOutDate', '2026-10-07'), lv(0, 'endDate', '2026-10-30'), lv(0, 'daDeductable', 'nope'), t(0, 'remove', 'yes'), t(2, 'remove', 'TRUE')], { allowAir: true, minDate: '2026-09-01', maxDate: '2026-10-11' });
+console.log(r.applied, r.rejected);
+console.log(CA.applyEdits(CA.initialClaimState(), [t(0, 'from', 'Noida'), a(0, 'location', 'Pune')]).state.accommodationRows.map((x) => x.location));
+const two = { ...claim(), transportationRows: [journey(), journey()] };
+try { CA.applyEdits(two, [t(1.5, 'from', 'Delhi')]); console.log('no throw'); } catch (e) { console.log('throw', e.constructor.name); }
+console.log(CA.applyEdits(two, [t(1.5, 'nothing', 'x')]).rejected, CA.applyEdits(claim(), [t(1.5, 'from', 'Delhi')]).state.transportationRows.map(x=>x.source));
+s = { ...claim(), includeAccommodation: true, includeLeave: true };
+s.transportationRows[0].claimedAmount = '1234567.5'; s.transportationRows[0].uploadedFiles = [{ name: 't.pdf', size: 1, type: 'application/pdf' }];
+s.accommodationRows = [{ ...CA.newAccommodationRow(), location: 'Pune', checkInDate: '2026-10-05', claimed: '900' }];
+s.leaveRows = [{ ...CA.newLeaveRow(), startDate: '2026-10-06' }];
+console.log(CA.snapshot(s, { tourId: 4521, source: 'Noida', destination: 'Pune', startDate: '2026-10-05' }));
+console.log(CA.summarizeJourneys(s)); console.log(CA.summarizeStays(s)); console.log(CA.summarizeLeave(s));
+s = claim(); s.transportationRows[0].uploadedFiles = [{ name: 't.pdf' }]; s.includeAccommodation = true;
+s.accommodationRows = [{ ...CA.newAccommodationRow(), location: 'Pune', billed: '1000', claimed: '1500.005', ClaimedCGSTAmount: 90 }];
+console.log(CA.findFormOnlyIssues(s));
+s = { ...CA.initialClaimState(), transportationRows: [journey({ TimeOfTravelSource: '', DateOfTravelDestination: '' })] }; s.includeAccommodation = true;
+s.accommodationRows = [{ ...CA.newAccommodationRow(), location: 'Pune', checkInDate: '2026-09-05' }];
+console.log(CA.findMissingFields(s).map((m) => m.question), JSON.stringify(CA.describeMissing(s, CA.findMissingFields(s))));
+console.log(CA.tourRulesFrom({ trDetails: { tentativeStartDate: '2026-10-05T00:00:00' }, tentativeTourPlans: [{ date: '2026-10-09', travelMode: 'Air' }, { date: '31/10/2026', travelMode: 'rail' }] }));
+console.log(CA.readClaimEdits([{ section: 'transport', row: '2', field: 'from', value: 5 }, { section: 'leave', row: null, field: 'daDeductable', value: true }, { section: 'accommodation', row: true, field: 'type', value: { a: 1 } }]));

@@ -1,0 +1,10 @@
+const OM = await import('./ts/ocrMapping.ts');
+const d = ["05/10/2026","05-10-26","5.10.2026","2026-10-05T00:00:00","2026-1-5","0099-01-01","05 Oct","October 5, 2026","5th October 2026","Mon, 05 Oct 2026","05-Oct-2026","2026/10/05","05 Oct 2026 10:30","Sept 5 2026","5 Sept 2026","Oct 2026","2026","31 Feb 2026","5 Oct 2026 PNR 2034","5 Oct 2026 10:30 IST","5 Oct 2026 23:30 GMT","10.05.2026x","12/31/2026"];
+console.log(JSON.stringify(d.map(OM.toIsoDate)));
+const t = ["9:5","09:05:00","10 AM","12 am","12 pm","12:30 a.m.","1030","930","10","10:30 hrs","10:30hours","NOON","midnight","13 pm","10:30\u00a0pm"];
+console.log(JSON.stringify(t.map(OM.toTime)));
+console.log(new Date(1790000000000).toISOString(), ["Business class","chair car","town","office car",null].map(OM.mapTravelMode));
+Date.now = () => 1790000000000; Math.random = () => 0.25;
+const r = OM.mapOcrToRows({tourDetails:{from:'Noida',to:'Pune',startDate:'05/10/2026',startTime:'9.05 pm',endDate:'Oct 6, 2026',endTime:'0610',modeOfTravel:'Express Train',distance:12.0,amountDetails:{billedAmount:1200.5,totalClaimedAmount:null,claimedAmount:1100,invoiceDate:'5th Oct 2026',taxStructure:'IGST',igst:0,sourceFileName:'t.pdf'},tourLegs:[{from:'  ',to:null}]},accommodationDetails:{entries:[{location:'Pune',checkInDate:'2026-10-06',accommodationType:'Company paid guest house',invoice:{cgst:45,sgst:'45',claimedAmountWithTax:1090,sourceFileName:'h.pdf'}}]},meta:{per_file_results:[{filename:'bad.pdf',success:false}]}}, ['t.pdf','h.pdf','bad.pdf','x.pdf'].map(n=>({file:new File(['abc'],n,{type:'application/pdf'})})));
+const row=r.transportationRows[0]; console.log(r.transportationRows.length, row.id, row.distanceKm, row.travelCost, row.claimedAmount, row.uploadedFiles[0].id, row.ModeOfTravel, row.TimeOfTravelDestiNation);
+const a=r.accommodationRows[0]; console.log(a.id,a.selectedType,a.tax,a.claimed,a.billed,JSON.stringify(a.ClaimedSGSTAmount),a.ClaimedIGSTAmount, r.failedFiles, r.unmatchedFiles);
