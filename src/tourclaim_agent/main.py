@@ -21,9 +21,9 @@ from tourclaim_agent.api.routes import router
 from tourclaim_agent.auth.identity import IdentityMismatch, IdentityResolver
 from tourclaim_agent.auth.tokens import InvalidToken, build_token_validator
 from tourclaim_agent.claimchat.ai.llm_client import LlmClient
+from tourclaim_agent.claimchat.flows import load_flows
 from tourclaim_agent.claimchat.runtime.bridge import BridgeCallNotFound
 from tourclaim_agent.claimchat.runtime.session import SessionStore
-from tourclaim_agent.claimchat.flows import load_flows
 from tourclaim_agent.claimchat.runtime.turn import ChatRuntime, UnknownMode
 from tourclaim_agent.clients.errors import (
     BackendError,
