@@ -23,6 +23,7 @@ from tourclaim_agent.auth.tokens import InvalidToken, build_token_validator
 from tourclaim_agent.claimchat.ai.llm_client import LlmClient
 from tourclaim_agent.claimchat.runtime.bridge import BridgeCallNotFound
 from tourclaim_agent.claimchat.runtime.session import SessionStore
+from tourclaim_agent.claimchat.flows import load_flows
 from tourclaim_agent.claimchat.runtime.turn import ChatRuntime, UnknownMode
 from tourclaim_agent.clients.errors import (
     BackendError,
@@ -53,6 +54,7 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 def build_chat_runtime(settings: Settings, http: httpx.AsyncClient, store: SessionStore) -> ChatRuntime:
     """The Claim Assistant chats (0.4): the old assistant's gateway, the session store and the Tour API settings."""
+    load_flows()
     gateway, key = settings.chat_gateway_url, settings.chat_gateway_api_key.get_secret_value()
     if not gateway and settings.llm_provider is LlmProvider.ARYAAN_GATEWAY:
         gateway, key = settings.llm_base_url, settings.llm_api_key.get_secret_value()
