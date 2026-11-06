@@ -10,7 +10,43 @@ Built with Python 3.12, FastAPI, LangGraph, Pydantic and HTTPX. The LLM provider
 `Project-Context/agent/functional_requirements.md` and
 `Project-Context/agent/bill_upload_auto_draft_requirements.md`.
 
-## What works in this release (0.3)
+## Release 0.4: the old Claim Assistant, on the server
+
+The agent now behaves **exactly like the old in-app Claim Assistant (ARYAAN)** of the React app: same greetings,
+questions, buttons, bill reports and wording, with the AI model (ARYAAN gateway, the original prompts) writing every
+reply. The old browser code was ported module by module into `src/tourclaim_agent/claimchat/`.
+
+| Chat mode | Where in the React app | Old component |
+|---|---|---|
+| `raise_page` | Raise Claim page | `ClaimChatbot.tsx` |
+| `raise_form` | Claim form (`/raise-claim-approver`) | `ClaimChatbot.tsx` with the form bridge |
+| `within_form` | Within Jurisdiction form | `WithinClaimChatbot.tsx` |
+
+- **Plan, decisions, specs:** `Project-Context/agent/old_assistant_parity/` (`00_port_plan.md`, specs A–E,
+  `02_runtime_design.md`). Every deliberate or unavoidable difference from the old assistant is listed in
+  `01_deviations.md`.
+- **Frontend contract:** `Project-Context/frontend/agent_0.4_frontend_requirements.md` (endpoints, events, and the
+  browser bridge through which the agent asks React to read/write/check/save/submit an open form).
+- **How parity was checked:**
+  - The domain modules were run side by side with the original TypeScript under Node on several hundred thousand
+    generated inputs, with no differences (`tools/parity_diff/`).
+  - The chat flows were ported line by line and are tested through HTTP against a fake Tour API and a fake gateway,
+    asserting the exact notes sent to the model, the buttons and the bridge calls.
+  - Every message sent to the model for the 589 old "understand" eval cases is rebuilt byte for byte.
+- **Live AI evaluation:** `tools/ai_eval/run_eval.py` runs the 749 cases of the old `npm run eval:ai` against the
+  gateway configured in `.env` (`--out eval-reports/<name>` writes a Markdown and JSON report).
+
+Settings for the chats (in addition to those below): `TCA_CHAT_GATEWAY_URL` / `TCA_CHAT_GATEWAY_API_KEY` (default: the
+`aryaan_gateway` LLM settings), `TCA_CHAT_GATEWAY_TIMEOUT_SECONDS` (60), `TCA_CHAT_BRIDGE_TIMEOUT_SECONDS` (60),
+`TCA_CHAT_SESSION_IDLE_MINUTES` (15: an idle chat hands back the bill results it holds), `TCA_CHAT_APP_ORIGIN` (used
+for saved-claim links when a request has no `Origin` header). Draft saving still needs
+`TCA_ENABLED_WRITE_ENDPOINTS=["Claim/SaveRaiseClaimDraft"]`. The agent must run as a single process (chat locks and
+waiting bridge calls are held in memory).
+
+The 0.3 conversation below is still served for requests without a `mode` and will be removed once the React app has
+moved to the 0.4 contract.
+
+## Earlier release (0.3)
 
 ### Tours and status (read-only)
 

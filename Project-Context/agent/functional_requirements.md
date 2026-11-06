@@ -12,6 +12,15 @@
 
 The .NET backend stays the source of truth for data, calculations, validations and authorization. The analysis showed that the backend does **not** currently calculate DA, check expense entitlements, or enforce ownership. This document therefore separates two things: what the agent can do with existing APIs, and what depends on new .NET endpoints (§10). Requirements that need a missing endpoint are marked **[DEP-n]**.
 
+> **Release 0.4 (2026-11-06):** the owner decided the agent must behave exactly like the old in-app Claim Assistant
+> (ARYAAN). For the chat behaviour (greetings, questions, buttons, bill handling, saving, review, submitting in Within
+> Jurisdiction) the source of truth is now `old_assistant_parity/` (specs A–E and the decisions in `00_port_plan.md`);
+> where this FRS differs, the old assistant's behaviour applies. Notable changes against this FRS: the AI model writes
+> every reply (not fixed templates); bills are saved into drafts without confirmation (as DOC-04 amended); Within
+> Jurisdiction claims are supported and can be submitted after the 7 declarations; form work goes through a browser
+> bridge. The safety principles (token only per request, allow-list, read-only sessions, no amounts calculated by the
+> agent, no automatic retries of writes) still apply.
+
 ---
 
 ## 1. Purpose and goals
