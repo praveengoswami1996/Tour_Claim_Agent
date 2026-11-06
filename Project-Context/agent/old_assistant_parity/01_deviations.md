@@ -28,6 +28,13 @@ field that differs takes the new value (or is removed when the new DTO has no su
 to case and keep the saved spelling. Rows without `_saved` (new bills) are built exactly as the TypeScript built them,
 and `_saved` is never sent. Journeys, stays and leave rows are all handled this way.
 
+`claimchat/saved_claim.py` (`claim_state_from_draft`) is what sets `_saved`: every journey, stay and leave row it
+builds from an item of the saved draft gets `{"dto": <deep copy of the item as read>, "row": <deep copy of the row as
+just parsed>}`. The parsing itself is the old one, quirks included (a stay's `selectedType` is read but its
+`ownArrangement` / `freeProvidedByCompany` / `companyPaid` flags stay "No", which the payload builder turns into a hotel
+stay; a stay's `InvoiceDate` is not read); the payload's `_saved` handling is what keeps that data. Nothing else reads `_saved`: the review, comparisons, summaries and texts are unchanged (the
+parity check `tools/parity_diff/run1c_py.py` strips it, compares with Node, and checks every `_saved` separately).
+
 **2. Retained file ids.** `assistant_draft_save` passes `hasResumedDraft` = saving into an existing draft (overwrite
 agreed and a draft id known), so `RetainedTransportationFileIds` / `RetainedAccomodationFileIds` carry the `fileId`s
 still on the rows, the lists the old code computed but dropped. A new draft sends neither key, as before.
