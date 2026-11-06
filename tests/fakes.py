@@ -15,6 +15,8 @@ import jwt
 
 TOUR_BASE = "https://tour.test/api"
 ORG_BASE = "https://org.test/api"
+# the ARYAAN AI gateway of the old Claim Assistant (its /chat/stream)
+GATEWAY_BASE = "https://gw.test/chat-api"
 
 
 def make_token(emp_code: str = "E1001", *, expires_in: int = 3600, **extra: Any) -> str:
@@ -85,6 +87,15 @@ class FakeBackend:
     failures: dict[str, list[int]] = field(default_factory=dict)
     next_draft_id: int = 9001
     next_file_id: int = 100
+    next_batch: int = 1
+    # TourPlan/GetTourDetails/{tourId} bodies' `data` per tour (none: 404)
+    tour_plans: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # The AI gateway: replies to give (in order; when empty, gateway_reply() works one out), calls seen, failures.
+    gateway_replies: list[str] = field(default_factory=list)
+    gateway_calls: list[dict[str, Any]] = field(default_factory=list)
+    gateway_fail: list[int] = field(default_factory=list)
+    upload_parts: list[list[str]] = field(default_factory=list)
+    list_params: list[dict[str, str]] = field(default_factory=list)
 
     def fail_next(self, endpoint: str, *statuses: int) -> None:
         self.failures.setdefault(endpoint, []).extend(statuses)
@@ -100,6 +111,8 @@ class FakeBackend:
         doc["errorMessage"] = "could not read" if failed else None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(GATEWAY_BASE):
+            return self._gateway(request)
         response = self._claim_routes(request)
         if response is not None:
             self.calls.append(f"{request.method} {request.url.path}")
@@ -119,6 +132,22 @@ class FakeBackend:
         if path.endswith("Claim/GetRaiseClaimDraft"):
             draft = self.drafts.get(int(request.url.params["empTourPlanId"]))
             return _env(draft) if draft else _env(None, status=404, message="No draft found for this tour plan.")
+        if path.endswith("Claim/GetAllRaiseClaimDrafts"):
+            rows = [
+                {
+                    "id": d["draftId"],
+                    "empTourPlanId": d["empTourPlanId"],
+                    "createdDate": "2026-10-01T10:00:00",
+                    "lastSavedDate": d.get("lastSavedDate"),
+                    "lastEditedSection": "Transportation",
+                    "draftName": None,
+                }
+                for d in self.drafts.values()
+            ]
+            return _env(rows)
+        if m := re.search(r"TourPlan/GetTourDetails/(\d+)$", path):
+            plan = self.tour_plans.get(int(m.group(1)))
+            return _env(plan) if plan else httpx.Response(404, json={"message": "Tour not found"})
         if path.endswith("Claim/SaveRaiseClaimDraft"):
             parts = _multipart(request)
             draft = json.loads(parts["draftData"][0][1])
@@ -132,7 +161,10 @@ class FakeBackend:
             return _env({"draftId": draft_id, "message": "Draft saved successfully."})
         if path.endswith("Ocr/Upload"):
             parts = _multipart(request)
+            self.upload_parts.append(list(parts))
             reference = parts["Reference"][0][1].decode()
+            batch_id = f"b{self.next_batch}"
+            self.next_batch += 1
             documents = []
             for index, (name, content) in enumerate(parts["Files"]):
                 doc_id = 7000 + len(self.ocr_docs) + 1
@@ -141,34 +173,45 @@ class FakeBackend:
                     "index": index,
                     "reference": reference,
                     "fileName": name,
+                    "batchId": batch_id,
                     "status": "Pending",
                     "isRead": False,
                     "content": content,
                     "response": None,
                 }
                 documents.append({"documentId": doc_id, "index": index, "fileName": name, "status": "Pending"})
-            return _env({"batchId": "b1", "documents": documents})
+            return _env({"batchId": batch_id, "documents": documents})
         if path.endswith("Ocr/GetMyDocuments"):
+            self.list_params.append(dict(request.url.params))
             prefix = request.url.params.get("ReferencePrefix", "")
+            include_read = request.url.params.get("IncludeRead") == "true"
+            include_response = request.url.params.get("IncludeResponse") == "true"
             docs = [
-                {k: v for k, v in d.items() if k != "content"}
+                {k: v for k, v in d.items() if k != "content" and (include_response or k != "response")}
                 for d in self.ocr_docs.values()
                 if d["reference"].startswith(prefix)
+                and (include_read or (not d["isRead"] and d["status"] != "Cancelled"))
             ]
             return _env({"summary": {}, "documents": docs})
+        if m := re.search(r"Ocr/GetDocument/(\d+)$", path):
+            doc = self.ocr_docs.get(int(m.group(1)))
+            if doc is None:
+                return _env(None, status=404, message="Document not found")
+            return _env({k: v for k, v in doc.items() if k != "content"})
         if path.endswith("Ocr/MarkAsRead"):
-            marked = []
+            marked, already, pending, missing = [], [], [], []
             for doc_id in json.loads(request.content)["documentIds"]:
                 doc = self.ocr_docs.get(doc_id)
-                if (
-                    doc
-                    and not doc["isRead"]
-                    and doc["status"] in ("Completed", "Failed")
-                    and doc_id not in self.taken_elsewhere
-                ):
+                if doc is None:
+                    missing.append(doc_id)
+                elif doc["isRead"] or doc_id in self.taken_elsewhere:
+                    already.append(doc_id)
+                elif doc["status"] not in ("Completed", "Failed"):
+                    pending.append(doc_id)
+                else:
                     doc["isRead"] = True
                     marked.append(doc_id)
-            return _env({"marked": marked})
+            return _env({"marked": marked, "alreadyRead": already, "stillPending": pending, "notFound": missing})
         if path.endswith("Ocr/Release"):
             ids = json.loads(request.content)["documentIds"]
             self.released += ids
@@ -192,6 +235,22 @@ class FakeBackend:
             doc = self.ocr_docs[int(m.group(1))]
             return httpx.Response(200, content=doc["content"], headers={"content-type": "application/pdf"})
         return None
+
+    def _gateway(self, request: httpx.Request) -> httpx.Response:
+        """POST <gateway>/chat/stream: the reply streams as plain text, in two parts."""
+        body = json.loads(request.content)
+        self.gateway_calls.append(body)
+        if self.gateway_fail:
+            return httpx.Response(self.gateway_fail.pop(0))
+        reply = self.gateway_replies.pop(0) if self.gateway_replies else gateway_reply(body["message"])
+        conversation = body.get("conversation_id") or f"conv-{len(self.gateway_calls)}"
+        half = len(reply) // 2
+
+        async def chunks():
+            yield reply[:half].encode()
+            yield reply[half:].encode()
+
+        return httpx.Response(200, content=chunks(), headers={"X-Conversation-Id": conversation})
 
     def _stored_draft(self, draft_id: int, draft: dict[str, Any], files: list[tuple[str, str]]) -> dict[str, Any]:
         """Store a saved draft the way the Tour API returns it: rows plus file references by rowIndex."""
@@ -248,7 +307,8 @@ class FakeBackend:
             return _env(emp)
 
         if m := re.search(r"TourListing/GetTourRequest/(\d+)$", path):
-            kind = request.url.params.get("touretype")
+            # .NET binds query names case-insensitively: the old page sent `toureType`, the 0.3 agent `touretype`
+            kind = next((v for k, v in request.url.params.items() if k.lower() == "touretype"), None)
             source = self.outside_tours if kind == "1" else self.within_tours
             items = source.get(int(m.group(1)), [])
             return _env(items or None, status=200 if items else 0)
@@ -287,6 +347,16 @@ class FakeBackend:
         if re.search(r"TourListing/GetTotalPendingTaskCount/\d+/USER$", path):
             return _env(1)
         return httpx.Response(404, json={"message": "no route in fake"})
+
+
+def gateway_reply(message: str) -> str:
+    """What the fake model writes: the NOTES (or what the employee said) back, so tests see what it was told."""
+    said = re.search(r"EMPLOYEE SAID:\n(.*?)(\n\n|$)", message, re.S)
+    if said:
+        return f"You said: {said.group(1)}"
+    notes = re.search(r"NOTES:\n(.*?)(\n\nQUESTION:|\n\nWrite the message now)", message, re.S)
+    lines = [re.sub(r"^\d+\. ", "", line) for line in (notes.group(1) if notes else "").split("\n")]
+    return "\n".join(line for line in lines if line and not line.startswith("   data:"))
 
 
 def _env(data: Any, *, status: int = 200, message: str = "") -> httpx.Response:

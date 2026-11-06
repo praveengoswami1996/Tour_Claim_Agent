@@ -16,9 +16,14 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from tourclaim_agent import __version__
 from tourclaim_agent.agent.graph import build_graph
+from tourclaim_agent.api.chat_routes import router as chat_router
 from tourclaim_agent.api.routes import router
 from tourclaim_agent.auth.identity import IdentityMismatch, IdentityResolver
 from tourclaim_agent.auth.tokens import InvalidToken, build_token_validator
+from tourclaim_agent.claimchat.ai.llm_client import LlmClient
+from tourclaim_agent.claimchat.runtime.bridge import BridgeCallNotFound
+from tourclaim_agent.claimchat.runtime.session import SessionStore
+from tourclaim_agent.claimchat.runtime.turn import ChatRuntime, UnknownMode
 from tourclaim_agent.clients.errors import (
     BackendError,
     BackendForbidden,
@@ -26,7 +31,7 @@ from tourclaim_agent.clients.errors import (
     BackendUnauthorized,
     BackendUnavailable,
 )
-from tourclaim_agent.config import Settings, get_settings
+from tourclaim_agent.config import LlmProvider, Settings, get_settings
 from tourclaim_agent.llm.factory import build_intent_extractor
 from tourclaim_agent.logging_setup import configure_logging, correlation_id, new_correlation_id
 from tourclaim_agent.service import (
@@ -44,6 +49,23 @@ log = logging.getLogger(__name__)
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "message": message})
+
+
+def build_chat_runtime(settings: Settings, http: httpx.AsyncClient, store: SessionStore) -> ChatRuntime:
+    """The Claim Assistant chats (0.4): the old assistant's gateway, the session store and the Tour API settings."""
+    gateway, key = settings.chat_gateway_url, settings.chat_gateway_api_key.get_secret_value()
+    if not gateway and settings.llm_provider is LlmProvider.ARYAAN_GATEWAY:
+        gateway, key = settings.llm_base_url, settings.llm_api_key.get_secret_value()
+    return ChatRuntime(
+        store=store,
+        http=http,
+        llm=LlmClient(http, base_url=gateway, api_key=key, timeout=settings.chat_gateway_timeout_seconds),
+        tour_api_base_url=settings.tour_api_base_url,
+        device_type=settings.device_type,
+        enabled_writes=frozenset(settings.enabled_write_endpoints),
+        bridge_timeout=settings.chat_bridge_timeout_seconds,
+        idle_seconds=settings.chat_session_idle_minutes * 60,
+    )
 
 
 def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
@@ -64,6 +86,9 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
             await registry.setup()
             uploads = UploadStore(registry_conn)
             await uploads.setup()
+            chat_store = SessionStore(registry_conn)
+            await chat_store.setup()
+            app.state.chat = build_chat_runtime(settings, http, chat_store)
             # Separate connection: the checkpointer manages its own transactions.
             checkpoint_conn = await aiosqlite.connect(db_path)
             stack.push_async_callback(checkpoint_conn.close)
@@ -83,6 +108,7 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
             yield
 
     app = FastAPI(title="Tour Claim AI Agent", version=__version__, lifespan=lifespan)
+    app.state.settings = settings
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -134,6 +160,14 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
     async def _workflow_missing(_: Request, exc: WorkflowNotFound) -> JSONResponse:
         return _error(404, "workflow_not_found", "This conversation was not found.")
 
+    @app.exception_handler(BridgeCallNotFound)
+    async def _bridge_missing(_: Request, exc: BridgeCallNotFound) -> JSONResponse:
+        return _error(404, "bridge_call_not_found", "This form call is no longer waiting for an answer.")
+
+    @app.exception_handler(UnknownMode)
+    async def _unknown_mode(_: Request, exc: UnknownMode) -> JSONResponse:
+        return _error(400, "unknown_mode", "This chat mode is not available.")
+
     @app.exception_handler(BackendNotFound)
     async def _not_found(_: Request, exc: BackendNotFound) -> JSONResponse:
         return _error(404, "not_found", str(exc))
@@ -147,6 +181,8 @@ def create_app(settings: Settings | None = None, *, http_transport: httpx.AsyncB
     async def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
+    # the chat routes first: they serve the paths shared with 0.3 and hand 0.3 calls to api/routes.py
+    app.include_router(chat_router)
     app.include_router(router)
     return app
 

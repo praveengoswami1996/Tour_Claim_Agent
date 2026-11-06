@@ -83,6 +83,23 @@ class UserScopedClient:
             self._result(self._parse(response, path), path, not_found_ok=False)
         return response.content, response.headers.get("content-type", "application/octet-stream")
 
+    async def send_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any = None,
+        data: dict[str, Any] | None = None,
+        files: list[Any] | None = None,
+    ) -> httpx.Response:
+        """One allow-listed call, with the user's headers, and the raw answer whatever its status.
+
+        For ports of old browser code that branch on the HTTP status and body themselves (the old axios callers).
+        A call that gets no answer raises BackendUnavailable.
+        """
+        return await self._send(method, path, params=params, json=json, data=data, files=files, map_status=False)
+
     def _result(self, envelope: Envelope, path: str, *, not_found_ok: bool) -> Envelope | None:
         if envelope.succeeded:
             return envelope
@@ -102,6 +119,7 @@ class UserScopedClient:
         json: Any = None,
         data: dict[str, Any] | None = None,
         files: list[FilePart] | None = None,
+        map_status: bool = True,
     ) -> httpx.Response:
         check_allowed(self._service, method, path, self._enabled_writes)
         url = f"{self._base_url}/{path.lstrip('/')}"
@@ -126,6 +144,8 @@ class UserScopedClient:
             response.status_code,
             (time.perf_counter() - started) * 1000,
         )
+        if not map_status:
+            return response
         if response.status_code == 401:
             raise BackendUnauthorized("Your session has expired. Please sign in again.", status_code=401)
         if response.status_code == 403:

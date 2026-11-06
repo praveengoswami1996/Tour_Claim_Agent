@@ -10,6 +10,23 @@ The port copies the old behaviour, including its quirks, except where the old co
 
 Further entries are added as the port finds them.
 
+## Running on the server (runtime, `claimchat/runtime/`)
+
+What the browser did that the server cannot do the same way (not deliberate changes of behaviour):
+
+| # | Old (browser) | Server runtime |
+|---|---|---|
+| R1 | Closing the window aborted a reply on its way (kept silently, written on reopen) | A reply that started is written to the end within the turn; `active: false` takes effect with the next request (replies are then held, `status.held`) |
+| R2 | A reply that failed after part of it was shown had its bubble removed | Event `{type: "reply_remove", id}` (not in the 0.4 contract yet; the frontend should drop that bubble) |
+| R3 | Re-greeting cleared the chat (`setMessages([])`) | Event `{type: "messages_cleared"}` (not in the 0.4 contract yet) |
+| R4 | A chip that sends words (`send('yes')`) drew a user bubble | `Turn.user_message(text, show=True)` sends `{type: "user_message", text}` (not in the 0.4 contract yet) |
+| R5 | Browser leases: heartbeat, `pagehide` keepalive Release, `recoverOcrClaims` of tabs silent > 60 s | Taken results are recorded in the session; given back on Start over (DELETE) and when a chat is not touched for 15 min (`TCA_CHAT_SESSION_IDLE_MINUTES`), on the employee's next request (the server has no token otherwise). An expired chat answers 404, so the frontend starts a new one |
+| R6 | `localFiles` (bytes of files uploaded in this page load) were per page load and survived Start over | Kept per chat: after Start over a read is reported as "uploaded earlier" |
+| R7 | Page toasts ("Failed to load the tour…", "Failed to save draft", "Failed to retrieve drafts") | Not shown; the outcomes ('failed', null) are the same |
+| R8 | The greeting used the SSO profile's `unique_name` | The token's `unique_name`, else the employee's name from the Organisation service |
+| R9 | A file the browser had no type for was checked with type `''` | The multipart type `application/octet-stream` is read as `''` |
+| R10 | `onOpenClaim` opened the form with `startClaim` | Bridge `openForm {tourId}` without `state` (the 0.4 contract has no separate method) |
+
 ## How the port carries out 1 and 2 (`claimchat/claim_payload.py`)
 
 **1. Saved rows.** A row read from a saved draft carries the saved row it came from under the key `_saved`:

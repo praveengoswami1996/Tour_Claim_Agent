@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_timeout_seconds: float = 30.0
 
+    # Claim Assistant chats (0.4 runtime): the ARYAAN gateway the old assistant used (`<base>/chat/stream`, the base
+    # ends in /chat-api). Empty: the llm_base_url / llm_api_key of the aryaan_gateway provider are used.
+    chat_gateway_url: str = ""
+    chat_gateway_api_key: SecretStr = SecretStr("")
+    chat_gateway_timeout_seconds: float = 60.0
+    # how long a bridge call waits for the browser's answer
+    chat_bridge_timeout_seconds: float = 60.0
+    # a chat not touched for this long counts as a closed tab (its OCR results are given back)
+    chat_session_idle_minutes: float = 15.0
+    # the frontend's origin for saved-claim links when the request has no Origin header
+    chat_app_origin: str = ""
+
     # HTTP
     cors_origins: list[str] = Field(default_factory=lambda: ["https://localhost:3001"])
 

@@ -1,4 +1,9 @@
-"""HTTP interface for the React app (FRS §8)."""
+"""HTTP interface for the React app (FRS §8).
+
+POST /sessions, POST /workflows, DELETE /workflows/{id}, POST /workflows/{id}/messages and /attachments are shared
+with the 0.4 Claim Assistant chats: api/chat_routes.py serves those paths and calls the functions here for 0.3
+conversations (no `mode`).
+"""
 
 from __future__ import annotations
 
@@ -43,12 +48,10 @@ ServiceDep = Annotated[AgentService, Depends(get_service)]
 UserDep = Annotated[RequestUser, Depends(current_user)]
 
 
-@router.post("/sessions")
 async def start_session(user: UserDep, service: ServiceDep) -> dict[str, Any]:
     return await service.start_session(user)
 
 
-@router.post("/workflows", status_code=201)
 async def create_workflow(user: UserDep, service: ServiceDep) -> WorkflowOut:
     record = await service.create_workflow(user)
     return WorkflowOut(workflow_id=record.workflow_id, title=record.title, updated_at=record.updated_at)
@@ -62,7 +65,6 @@ async def list_workflows(user: UserDep, service: ServiceDep) -> list[WorkflowOut
     ]
 
 
-@router.delete("/workflows/{workflow_id}", status_code=204)
 async def abandon_workflow(workflow_id: str, user: UserDep, service: ServiceDep) -> None:
     await service.abandon_workflow(user, workflow_id)
 
@@ -79,7 +81,6 @@ def _respond(events: list[dict[str, Any]], stream: bool) -> StreamingResponse | 
     return StreamingResponse(sse(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
-@router.post("/workflows/{workflow_id}/messages", response_model=None)
 async def send_message(
     workflow_id: str,
     message: MessageIn,
@@ -92,7 +93,6 @@ async def send_message(
     return _respond(await service.send_message(user, workflow_id, message.text), stream)
 
 
-@router.post("/workflows/{workflow_id}/attachments", response_model=None)
 async def add_attachments(
     workflow_id: str,
     files: list[UploadFile],

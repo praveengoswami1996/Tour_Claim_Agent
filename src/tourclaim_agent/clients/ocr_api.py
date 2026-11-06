@@ -30,6 +30,11 @@ class OcrApiClient:
     def __init__(self, client: UserScopedClient) -> None:
         self._c = client
 
+    @property
+    def client(self) -> UserScopedClient:
+        """The user's allow-listed client (the Claim Assistant port makes the old calls on it as they were)."""
+        return self._c
+
     async def upload(self, files: list[tuple[str, bytes, str]], reference: str) -> list[OcrDocument]:
         """POST Ocr/Upload. All-or-nothing: the backend rejects the batch if any file is invalid."""
         parts: list[FilePart] = [("Files", f) for f in files]

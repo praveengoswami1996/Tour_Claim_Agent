@@ -29,6 +29,8 @@ class TokenClaims:
     expires_at: float | None
     read_only: bool
     scopes: frozenset[str] = field(default_factory=frozenset)
+    # the SSO profile's display name (`unique_name`): the old Claim Assistant greeted the employee with it
+    name: str | None = None
 
     @property
     def seconds_left(self) -> float | None:
@@ -63,6 +65,7 @@ def claims_from_payload(payload: dict[str, Any], settings: Settings) -> TokenCla
         expires_at=float(exp) if exp is not None else None,
         read_only=_truthy(payload.get("IsReadOnly", False)),
         scopes=scopes,
+        name=str(payload["unique_name"]) if isinstance(payload.get("unique_name"), str) else None,
     )
 
 
