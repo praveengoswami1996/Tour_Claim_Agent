@@ -152,8 +152,8 @@ type AgentEvent =
   | { type: 'system_notice'; text: string }                       // "The assistant is unavailable right now. Please try again."
   | { type: 'user_files'; names: string[] }                       // add "📎 name" user bubbles
   | { type: 'chips'; items: Chip[] }
-  | { type: 'composer'; placeholder: string; canType: boolean; canAttach: boolean }
-  | { type: 'status'; header: string; busy?: string | null; launcher?: string | null; held?: boolean }
+  | { type: 'composer'; placeholder: string; canType: boolean; canAttach: boolean; highlightUpload?: boolean } // highlight 📎 as the old composer did
+  | { type: 'status'; header: string; busy?: string | null; launcher?: string | null; held?: boolean; greeting?: string | null; draftsChanged?: boolean } // greeting: the launcher's resting bubble text
   | { type: 'bills'; staged: FilePill[]; inFlight: FilePill[] }
   | { type: 'bridge_call'; id: string; method: BridgeMethod; args?: unknown }
   | { type: 'reply_remove'; id: string }                         // take out a reply that started streaming, then failed

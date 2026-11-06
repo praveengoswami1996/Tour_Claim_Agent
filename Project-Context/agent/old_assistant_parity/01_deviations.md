@@ -27,6 +27,19 @@ What the browser did that the server cannot do the same way (not deliberate chan
 | R9 | A file the browser had no type for was checked with type `''` | The multipart type `application/octet-stream` is read as `''` |
 | R10 | `onOpenClaim` opened the form with `startClaim` | Bridge `openForm {tourId}` without `state` (the 0.4 contract has no separate method) |
 
+### Within Jurisdiction chat (`claimchat/flows/within.py`, WithinClaimChatbot.tsx)
+
+| # | Old (browser) | Server |
+|---|---|---|
+| W1 | `form.write`, `form.check()`, `form.info()` were synchronous and could not fail | They are bridge calls. A failed or unanswered `write` puts the snapshot and the undo copy back and raises: inside a typed turn that is the old catch-all (system notice + "Try again"); from a chip the runtime's `error` event; inside `applyPlan` the old "I couldn't make tours from that plan…" note. A failed `check` / `info` raises the same way |
+| W2 | `readPlan` checked `navigator.onLine` first ("You seem to be offline…", :285-289) | No server equivalent: the check is left out (an unreachable Tour API gives the upload's own "not reachable" message, as before) |
+| W3 | `doSubmit` said "I started the submission…" only while the chat was still mounted (`aliveRef`, :517; a successful submit navigates away) | Always said; the `submit` answer's `{submitted, message}` is not read (the old code ignored the outcome too). If the page navigates away the reply is simply never shown |
+| W4 | A plan taken and waiting for "replace the tours?" stayed taken until the chat unmounted | Same, but an idle chat gives it back (R5). If the employee then says yes, `applyPlan` takes it again (MarkAsRead) before settling, so it does not come back; if they typed something else, the given-back plan is gone through again (and the question asked again) on the next turn |
+| W5 | `form.read()` after `write` returned the written tours at once (ref) | The snapshot is set to the written tours before the call; the browser's answer (`form`) then replaces it, so later reads see the form's own state (e.g. re-sorted ended tours) as the old ref did after the form's effects ran |
+| W6 | The closed launcher's resting bubble was a constant in the launcher (WithinClaimAssistantLauncher.tsx:11) | Sent as `status.greeting` (not in the 0.4 contract; the frontend may keep its own copy) |
+| W7 | The composer highlighted 📎 when there were no tours and nothing was typed (:843) | `composer.highlightUpload` (not in the 0.4 contract) |
+| W8 | The plan file was a `File` held in memory (`planFile`, the yes/no closure) | Its bytes are kept in the chat's file store (`plan-<n>`) until the upload succeeds (or the chat is closed) |
+
 ## How the port carries out 1 and 2 (`claimchat/claim_payload.py`)
 
 **1. Saved rows.** A row read from a saved draft carries the saved row it came from under the key `_saved`:
