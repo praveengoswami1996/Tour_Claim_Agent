@@ -1,8 +1,8 @@
 """Port of Tour_React tests/claimChatbot/parsers.test.ts and the ocrMapping-only tests of staysOnly.test.ts.
 
-Not ported here (they need tourMatcher.ts, next phase): staysOnly.test.ts 'hotel bills only: each stay goes to the
-tour its dates fit; a stay no tour fits is left out' and 'attachUnmatched: once the claim is known, the empty bill goes
-to its first stay' (its stays come from triageRows). The bills' File objects are file dicts here.
+The staysOnly.test.ts tests that need tourMatcher.ts ('hotel bills only: each stay goes to the tour its dates fit; a
+stay no tour fits is left out' and 'attachUnmatched: once the claim is known, the empty bill goes to its first stay')
+are in test_tour_matcher.py, using BILLS and RESULT from here. The bills' File objects are file dicts here.
 """
 
 from __future__ import annotations

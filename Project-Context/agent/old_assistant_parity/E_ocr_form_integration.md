@@ -199,6 +199,9 @@ Resolves `true` on success, `false` when disabled or on error. The form's own "S
 
 ### 2.1 Builder call (`RaiseClaim.tsx:420-434`)
 
+> **Port note:** this section describes the old code. The port deliberately sends `RetainedTransportationFileIds` /
+> `RetainedAccomodationFileIds` when saving into an existing draft (deviation 2 in `01_deviations.md`).
+
 ```
 buildClaimPayload({
   transportationRows: state.transportationRows,   // stored order (asStored), incl. blank placeholder rows

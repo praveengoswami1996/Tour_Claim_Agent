@@ -1,7 +1,7 @@
 """Port of the rowOrder.ts tests of Tour_React tests/claimChatbot/timeOverlap.test.ts.
 
-Not ported here (they need claimProgress.ts / tourReview.ts, next phase): 'the chat tells about the overlap and how to
-fix it', 'the review asks about the overlap as a must-fix, and the short summary names it'. The rowOrder tests of
+'the chat tells about the overlap and how to fix it' is in test_claim_progress.py. Not ported yet (it needs
+tourReview.ts): 'the review asks about the overlap as a must-fix, and the short summary names it'. The rowOrder tests of
 savedClaim.test.ts build their claim with claimStateFromDraft (savedClaim.ts) and move with that module.
 """
 

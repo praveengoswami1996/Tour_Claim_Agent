@@ -1,8 +1,8 @@
 """Port of Tour_React tests/claimChatbot/claimAssistant.test.ts (claimAssistant.ts only), plus checks of our own.
 
-Not ported here (they need claimProgress.ts, next phase): 'findClaimIssues: arrives before departs, outside tour,
-stay and leave outside tour', 'stayBillProblem: bad hotel bills are refused with a reason', 'buildProgress: not
-ready until tour, journeys, stays and leave are settled'.
+The claimProgress.ts tests of that file ('findClaimIssues: arrives before departs, outside tour, stay and leave outside
+tour', 'stayBillProblem: bad hotel bills are refused with a reason', 'buildProgress: not ready until tour, journeys,
+stays and leave are settled') are in test_claim_progress.py.
 """
 
 from __future__ import annotations
